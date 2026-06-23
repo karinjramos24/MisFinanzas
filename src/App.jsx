@@ -1,32 +1,51 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Home, PlusCircle, BarChart3, Target, Settings, X, TrendingUp, TrendingDown,
-  AlertTriangle, CheckCircle2, Sparkles, ChevronRight, Wallet, PiggyBank,
+  AlertTriangle, CheckCircle2, Sparkles, ChevronRight, Heart, PiggyBank,
   ArrowUpRight, ArrowDownRight, Trash2, Edit3, Filter, Moon, Sun, Download,
   Bell, Plus, ChevronLeft, Calendar, Tag
 } from "lucide-react";
 
 /* ----------------------------------------------------------------------
    TOKENS
-   Paper-ledger aesthetic: warm cream "paper", ink text, an emerald for
-   savings/growth, amber for caution, terracotta-red for over-limit.
-   Display face does the heavy lifting on numbers; a grotesk handles UI;
-   a mono face renders amounts in tables, like a real ledger column.
+   Pastel lilac diary aesthetic: soft lavender background, dusty-rose and
+   mint accents, a rounded playful display face for numbers/headers, and
+   a friendly emoji per category instead of plain text labels.
 ------------------------------------------------------------------------- */
 const TOKENS = {
-  paper: "#FAF6EE",
-  paperDark: "#14140F",
-  ink: "#1C2421",
-  inkDark: "#EDE7D9",
-  emerald: "#2D6A4F",
-  emeraldSoft: "#E4EFE6",
-  amber: "#B8740A",
-  amberSoft: "#F7ECD6",
-  red: "#A8412A",
-  redSoft: "#F4E1DC",
-  line: "#DDD4C0",
-  lineDark: "#33352C",
+  paper: "#F6EFFB",
+  paperDark: "#241B33",
+  ink: "#4A3B5C",
+  inkDark: "#EFE4FA",
+  emerald: "#7FB99A",
+  emeraldSoft: "#DFF3E8",
+  amber: "#E8A85C",
+  amberSoft: "#FCE9D2",
+  red: "#E18AA0",
+  redSoft: "#FBE1E9",
+  line: "#E3D3F2",
+  lineDark: "#3A2C4F",
+  lilac: "#C9A8E8",
+  lilacSoft: "#EDE0FA",
+  pink: "#F4C9D9",
 };
+
+const CATEGORY_EMOJI = {
+  "Servicios públicos": "💡",
+  "Transporte": "🚌",
+  "Higiene personal": "🧴",
+  "Desayunos": "🥐",
+  "Almuerzos": "🍱",
+  "Fines de semana": "🌸",
+  "Regalos": "🎁",
+  "Otros gastos": "✨",
+  "Salario": "💼",
+  "Independiente": "🧵",
+  "Regalo": "🎀",
+  "Inversión": "🌱",
+  "Otro": "💫",
+};
+const catEmoji = (cat) => CATEGORY_EMOJI[cat] || "🌷";
 
 const CATS_GASTO = [
   "Servicios públicos", "Transporte", "Higiene personal", "Desayunos",
@@ -372,7 +391,7 @@ function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustom
         <>
           <Field label="Categoría">
             <SelectInput value={categoria} onChange={(e) => setCategoria(e.target.value)}>
-              {CATS_GASTO.map((c) => <option key={c} value={c}>{c}</option>)}
+              {CATS_GASTO.map((c) => <option key={c} value={c}>{catEmoji(c)} {c}</option>)}
             </SelectInput>
           </Field>
           {categoria === "Otros gastos" && (
@@ -398,7 +417,7 @@ function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustom
         <>
           <Field label="Categoría">
             <SelectInput value={categoria} onChange={(e) => setCategoria(e.target.value)}>
-              {CATS_INGRESO.map((c) => <option key={c} value={c}>{c}</option>)}
+              {CATS_INGRESO.map((c) => <option key={c} value={c}>{catEmoji(c)} {c}</option>)}
             </SelectInput>
           </Field>
           <Field label="Fuente / notas">
@@ -414,7 +433,7 @@ function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustom
       <button
         onClick={handleSubmit}
         className="w-full mt-2 rounded-xl py-3.5 font-utility font-semibold text-[15px] active:scale-[0.98] transition-transform"
-        style={{ background: "var(--ink)", color: "var(--paper)" }}
+        style={{ background: "var(--lilac)", color: "#FFFFFF" }}
       >
         Guardar movimiento
       </button>
@@ -427,14 +446,14 @@ function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustom
 ------------------------------------------------------------------------- */
 function SemaforoBadge({ semaforo }) {
   const map = {
-    verde: { color: "var(--emerald)", label: "En buen camino", bg: "var(--emerald-soft)" },
-    amarillo: { color: "var(--amber)", label: "Atención moderada", bg: "var(--amber-soft)" },
-    rojo: { color: "var(--red)", label: "Requiere atención", bg: "var(--red-soft)" },
+    verde: { color: "var(--emerald)", label: "Vas genial", emoji: "🌷", bg: "var(--emerald-soft)" },
+    amarillo: { color: "var(--amber)", label: "Ojo aquí", emoji: "🌼", bg: "var(--amber-soft)" },
+    rojo: { color: "var(--red)", label: "Necesita mimos", emoji: "🌺", bg: "var(--red-soft)" },
   };
   const s = map[semaforo];
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full" style={{ background: s.bg }}>
-      <span className="w-2 h-2 rounded-full" style={{ background: s.color }} />
+    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full" style={{ background: s.bg }}>
+      <span className="text-xs">{s.emoji}</span>
       <span className="text-xs font-utility font-medium" style={{ color: s.color }}>{s.label}</span>
     </div>
   );
@@ -452,7 +471,7 @@ function Dashboard({ analytics, onNavigate }) {
           <p className="text-xs font-utility uppercase tracking-wide opacity-60" style={{ color: "var(--ink)" }}>
             {monthLabel(analytics.curMonth)}
           </p>
-          <h1 className="font-display text-[28px] leading-tight" style={{ color: "var(--ink)" }}>Tu mes en números</h1>
+          <h1 className="font-display text-[28px] leading-tight" style={{ color: "var(--ink)" }}>Tu mes en bonito ✨</h1>
         </div>
         <SemaforoBadge semaforo={semaforo} />
       </div>
@@ -464,7 +483,7 @@ function Dashboard({ analytics, onNavigate }) {
             color={semaforo === "rojo" ? "var(--red)" : semaforo === "amarillo" ? "var(--amber)" : "var(--emerald)"}
             trackColor="var(--line)" />
           <div className="absolute inset-0 flex items-center justify-center">
-            <Wallet size={26} style={{ color: "var(--ink)", opacity: 0.5 }} />
+            <Heart size={26} style={{ color: "var(--ink)", opacity: 0.5 }} fill="var(--pink)" />
           </div>
         </div>
         <div className="flex-1 min-w-0">
@@ -636,7 +655,7 @@ function History({ data, onDelete }) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-utility text-sm font-medium truncate" style={{ color: "var(--ink)" }}>
-                    {x.categoria || x.fuente || x.observaciones || "Movimiento"}
+                    {x.categoria ? `${catEmoji(x.categoria)} ${x.categoria}` : (x.fuente || x.observaciones || "Movimiento")}
                   </p>
                   <p className="text-xs font-utility opacity-55" style={{ color: "var(--ink)" }}>
                     {x.fecha} {x.metodo ? `· ${x.metodo}` : ""} {x.impulsivo ? "· Impulsivo" : ""}
@@ -708,7 +727,7 @@ function Analysis({ analytics }) {
             return (
               <div key={cat}>
                 <div className="flex justify-between text-xs font-utility mb-1" style={{ color: "var(--ink)" }}>
-                  <span className="opacity-80">{cat}</span>
+                  <span className="opacity-80">{catEmoji(cat)} {cat}</span>
                   <span className="font-mono opacity-70">${fmt(val)} · {Math.round(pctOfIncome)}%</span>
                 </div>
                 <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--line)" }}>
@@ -729,7 +748,7 @@ function Analysis({ analytics }) {
             return (
               <div key={l.categoria}>
                 <div className="flex justify-between text-xs font-utility mb-1" style={{ color: "var(--ink)" }}>
-                  <span className="opacity-80">{l.categoria}</span>
+                  <span className="opacity-80">{catEmoji(l.categoria)} {l.categoria}</span>
                   <span className="font-mono opacity-70">${fmt(l.gastado)} / ${fmt(l.limite)}</span>
                 </div>
                 <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--line)" }}>
@@ -837,7 +856,7 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
         <div className="rounded-[20px] p-4 space-y-3" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
           {CATS_GASTO.map((cat) => (
             <div key={cat} className="flex items-center justify-between gap-3">
-              <span className="text-sm font-utility flex-1" style={{ color: "var(--ink)" }}>{cat}</span>
+              <span className="text-sm font-utility flex-1" style={{ color: "var(--ink)" }}>{catEmoji(cat)} {cat}</span>
               <TextInput
                 type="number" defaultValue={data.limites[cat] || ""} placeholder="Sin límite"
                 className="w-28 !py-2 !text-sm text-right"
@@ -858,7 +877,7 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
         <Field label="Fecha meta (opcional)">
           <TextInput type="date" value={fechaMeta} onChange={(e) => setFechaMeta(e.target.value)} />
         </Field>
-        <button onClick={handleAddMeta} className="w-full mt-2 rounded-xl py-3.5 font-utility font-semibold text-[15px]" style={{ background: "var(--ink)", color: "var(--paper)" }}>
+        <button onClick={handleAddMeta} className="w-full mt-2 rounded-xl py-3.5 font-utility font-semibold text-[15px]" style={{ background: "var(--lilac)", color: "#FFFFFF" }}>
           Crear meta
         </button>
       </Sheet>
@@ -908,8 +927,7 @@ function SettingsView({ data, onToggleDark, onExport, error }) {
 
       <div className="rounded-[18px] p-4" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
         <p className="text-xs font-utility opacity-60 leading-relaxed" style={{ color: "var(--ink)" }}>
-          Tus datos se guardan automáticamente y persisten entre sesiones en este dispositivo.
-          No se comparten con nadie más.
+          💌 Tus datos se guardan solitos, sin que hagas nada. Todo queda aquí en tu dispositivo, nadie más los ve.
         </p>
       </div>
     </div>
@@ -929,15 +947,17 @@ export default function App() {
   const dark = data?.darkMode;
 
   const cssVars = dark ? {
-    "--paper": TOKENS.paperDark, "--ink": TOKENS.inkDark, "--card": "#1C1D16",
-    "--card-alt": "#23241B", "--line": TOKENS.lineDark, "--input-bg": "#1C1D16",
-    "--emerald": "#52B788", "--emerald-soft": "#1E3326", "--amber": "#E0A52B",
-    "--amber-soft": "#3A2E12", "--red": "#E0654A", "--red-soft": "#3A1F16",
+    "--paper": TOKENS.paperDark, "--ink": TOKENS.inkDark, "--card": "#2D2240",
+    "--card-alt": "#352846", "--line": TOKENS.lineDark, "--input-bg": "#2D2240",
+    "--emerald": "#8FD4AE", "--emerald-soft": "#23402F", "--amber": "#F0BD7E",
+    "--amber-soft": "#42301B", "--red": "#F0A3B8", "--red-soft": "#452531",
+    "--lilac": "#C9A8E8", "--lilac-soft": "#3A2C4F", "--pink": "#F4C9D9",
   } : {
     "--paper": TOKENS.paper, "--ink": TOKENS.ink, "--card": "#FFFFFF",
-    "--card-alt": "#F1ECE0", "--line": TOKENS.line, "--input-bg": "#FFFFFF",
+    "--card-alt": "#F3EAFB", "--line": TOKENS.line, "--input-bg": "#FFFFFF",
     "--emerald": TOKENS.emerald, "--emerald-soft": TOKENS.emeraldSoft, "--amber": TOKENS.amber,
     "--amber-soft": TOKENS.amberSoft, "--red": TOKENS.red, "--red-soft": TOKENS.redSoft,
+    "--lilac": TOKENS.lilac, "--lilac-soft": TOKENS.lilacSoft, "--pink": TOKENS.pink,
   };
 
   if (loading || !data) {
@@ -1014,9 +1034,9 @@ export default function App() {
       <style>{`
         @keyframes slideUp { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .font-display { font-family: 'Fraunces', 'Georgia', serif; font-weight: 600; letter-spacing: -0.01em; }
-        .font-utility { font-family: 'Inter', system-ui, sans-serif; }
-        .font-mono { font-family: 'JetBrains Mono', 'SF Mono', monospace; }
+        .font-display { font-family: 'Fredoka', 'Quicksand', sans-serif; font-weight: 600; letter-spacing: -0.01em; }
+        .font-utility { font-family: 'Quicksand', system-ui, sans-serif; }
+        .font-mono { font-family: 'Quicksand', system-ui, sans-serif; font-weight: 600; }
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
         }
@@ -1088,10 +1108,10 @@ export default function App() {
           <button
             onClick={() => setAddMenuOpen((s) => !s)}
             className="w-14 h-14 rounded-full flex items-center justify-center shadow-xl active:scale-95 transition-transform"
-            style={{ background: "var(--ink)" }}
+            style={{ background: "linear-gradient(135deg, var(--lilac), var(--pink))" }}
             aria-label="Agregar movimiento"
           >
-            <Plus size={26} style={{ color: "var(--paper)", transform: addMenuOpen ? "rotate(45deg)" : "none", transition: "transform 0.2s" }} />
+            <Plus size={26} style={{ color: "#FFFFFF", transform: addMenuOpen ? "rotate(45deg)" : "none", transition: "transform 0.2s" }} />
           </button>
         </div>
       </div>
