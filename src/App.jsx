@@ -33,7 +33,8 @@ const TOKENS = {
 const CATEGORY_EMOJI = {
   "Servicios públicos": "💡",
   "Transporte": "🚌",
-  "Higiene personal": "🧴",
+  "Gastos personales": "🧴",
+  "Deudas": "🏦",
   "Desayunos": "🥐",
   "Almuerzos": "🍱",
   "Fines de semana": "🌸",
@@ -48,58 +49,106 @@ const CATEGORY_EMOJI = {
 const catEmoji = (cat) => CATEGORY_EMOJI[cat] || "🌷";
 
 const CATS_GASTO = [
-  "Servicios públicos", "Transporte", "Higiene personal", "Desayunos",
-  "Almuerzos", "Fines de semana", "Regalos", "Otros gastos",
+  "Servicios públicos", "Transporte", "Gastos personales", "Desayunos",
+  "Almuerzos", "Fines de semana", "Regalos", "Deudas", "Otros gastos",
 ];
 const CATS_INGRESO = ["Salario", "Independiente", "Regalo", "Inversión", "Otro"];
 const METODOS = ["Efectivo", "Débito", "Crédito", "Transferencia"];
+const CREDITO_TIPOS = ["Pago inmediato", "Acumula próximo mes", "Diferir en cuotas"];
 
 const fmt = (n) =>
   new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 }).format(Math.round(n || 0));
 const todayISO = () => new Date().toISOString().slice(0, 10);
-const monthKey = (iso) => iso.slice(0, 7);
-const monthLabel = (key) => {
-  const [y, m] = key.split("-");
-  const names = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
-  return `${names[parseInt(m,10)-1]} ${y}`;
-};
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+// ---------- LÓGICA DE PERÍODOS POR SALARIO ----------
+// Un "período" va desde la fecha de un ingreso de salario hasta el día anterior
+// al siguiente ingreso de salario. Así el ciclo financiero refleja tu realidad,
+// no el mes calendario.
+
+function buildPeriods(ingresos) {
+  // Ordenar salarios cronológicamente
+  const salarios = ingresos
+    .filter((i) => i.categoria === "Salario")
+    .map((i) => i.fecha)
+    .sort();
+
+  if (salarios.length === 0) return [];
+
+  const periods = salarios.map((fecha, idx) => {
+    const inicio = fecha;
+    const fin = salarios[idx + 1]
+      ? offsetDay(salarios[idx + 1], -1) // día anterior al próximo salario
+      : null; // período actual: abierto
+    return { key: inicio, inicio, fin, label: periodLabel(inicio) };
+  });
+
+  return periods;
+}
+
+function offsetDay(iso, days) {
+  const d = new Date(iso);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function periodLabel(inicio) {
+  const [y, m, d] = inicio.split("-");
+  const names = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+  return `${names[parseInt(m,10)-1]} ${parseInt(d,10)}, ${y}`;
+}
+
+function inPeriod(fecha, inicio, fin) {
+  if (fecha < inicio) return false;
+  if (fin && fecha > fin) return false;
+  return true;
+}
+
+function getCurrentPeriod(periods) {
+  const today = todayISO();
+  // El período actual es el último cuyo inicio ya pasó
+  for (let i = periods.length - 1; i >= 0; i--) {
+    if (periods[i].inicio <= today) return periods[i];
+  }
+  return periods[periods.length - 1] || null;
+}
+
+function getPreviousPeriod(periods, current) {
+  if (!current) return null;
+  const idx = periods.findIndex((p) => p.key === current.key);
+  return idx > 0 ? periods[idx - 1] : null;
+}
 
 const STORAGE_KEY = "finanzas-data-v1";
 
 const seedData = () => {
   const now = new Date();
   const iso = (d) => d.toISOString().slice(0, 10);
-  const thisMonth = (day) => {
-    const dt = new Date(now.getFullYear(), now.getMonth(), day);
-    return iso(dt);
-  };
-  const lastMonth = (day) => {
-    const dt = new Date(now.getFullYear(), now.getMonth() - 1, day);
-    return iso(dt);
-  };
+  const day = (y, m, d) => iso(new Date(y, m, d));
+  const y = now.getFullYear();
+  const m = now.getMonth();
   return {
     ingresos: [
-      { id: uid(), fecha: thisMonth(1), valor: 3200000, categoria: "Salario", fuente: "Empleo principal", notas: "" },
-      { id: uid(), fecha: lastMonth(1), valor: 3200000, categoria: "Salario", fuente: "Empleo principal", notas: "" },
+      { id: uid(), fecha: day(y, m - 1, 23), valor: 3200000, categoria: "Salario", fuente: "Empleo principal", notas: "" },
+      { id: uid(), fecha: day(y, m, 23), valor: 3200000, categoria: "Salario", fuente: "Empleo principal", notas: "" },
     ],
     gastos: [
-      { id: uid(), fecha: thisMonth(3), valor: 180000, categoria: "Servicios públicos", descripcion: "Energía + agua", metodo: "Débito", impulsivo: false },
-      { id: uid(), fecha: thisMonth(5), valor: 90000, categoria: "Transporte", descripcion: "Recargas mes", metodo: "Efectivo", impulsivo: false },
-      { id: uid(), fecha: thisMonth(8), valor: 45000, categoria: "Fines de semana", descripcion: "Cine + comida", metodo: "Crédito", impulsivo: true },
-      { id: uid(), fecha: thisMonth(10), valor: 120000, categoria: "Almuerzos", descripcion: "Semana 2", metodo: "Efectivo", impulsivo: false },
-      { id: uid(), fecha: lastMonth(12), valor: 95000, categoria: "Fines de semana", descripcion: "Salida", metodo: "Crédito", impulsivo: true },
+      { id: uid(), fecha: day(y, m, 24), valor: 180000, categoria: "Servicios públicos", descripcion: "Energía + agua", metodo: "Débito", impulsivo: false, creditoTipo: null, cuotas: null },
+      { id: uid(), fecha: day(y, m, 25), valor: 90000, categoria: "Transporte", descripcion: "Recargas", metodo: "Efectivo", impulsivo: false, creditoTipo: null, cuotas: null },
+      { id: uid(), fecha: day(y, m, 27), valor: 45000, categoria: "Fines de semana", descripcion: "Cine + comida", metodo: "Crédito", impulsivo: true, creditoTipo: "Pago inmediato", cuotas: null },
+      { id: uid(), fecha: day(y, m, 28), valor: 120000, categoria: "Almuerzos", descripcion: "Semana 1", metodo: "Efectivo", impulsivo: false, creditoTipo: null, cuotas: null },
+      { id: uid(), fecha: day(y, m - 1, 28), valor: 95000, categoria: "Fines de semana", descripcion: "Salida", metodo: "Crédito", impulsivo: true, creditoTipo: "Diferir en cuotas", cuotas: 3 },
     ],
     ahorros: [
-      { id: uid(), fecha: thisMonth(1), valor: 400000, meta: null, observaciones: "Ahorro mensual fijo" },
+      { id: uid(), fecha: day(y, m, 23), valor: 400000, meta: null, observaciones: "Ahorro mensual fijo" },
     ],
     metas: [
       { id: uid(), nombre: "Cuota inicial vivienda", monto: 20000000, fecha: "2027-12-31", ahorroAcumulado: 400000 },
     ],
     limites: {
-      "Servicios públicos": 220000, "Transporte": 150000, "Higiene personal": 80000,
+      "Servicios públicos": 220000, "Transporte": 150000, "Gastos personales": 80000,
       "Desayunos": 150000, "Almuerzos": 200000, "Fines de semana": 150000,
-      "Regalos": 60000, "Otros gastos": 100000,
+      "Regalos": 60000, "Deudas": 200000, "Otros gastos": 100000,
     },
     darkMode: false,
   };
@@ -148,55 +197,64 @@ function useStorage() {
 }
 
 /* ----------------------------------------------------------------------
-   ANALYTICS ENGINE
+   ANALYTICS ENGINE — basado en períodos de salario, no meses calendario
 ------------------------------------------------------------------------- */
 function useAnalytics(data) {
   return useMemo(() => {
     if (!data) return null;
     const { ingresos, gastos, ahorros, limites, metas } = data;
-    const months = Array.from(
-      new Set([...ingresos, ...gastos, ...ahorros].map((x) => monthKey(x.fecha)))
-    ).sort();
-    const curMonth = monthKey(todayISO());
-    const prevMonths = months.filter((m) => m !== curMonth);
-    const lastIdx = months.indexOf(curMonth);
-    const prevMonth = lastIdx > 0 ? months[lastIdx - 1] : (prevMonths[prevMonths.length - 1] || null);
+
+    // Construir períodos según fechas de salario
+    const periods = buildPeriods(ingresos);
+    const curPeriod = getCurrentPeriod(periods);
+    const prevPeriod = getPreviousPeriod(periods, curPeriod);
 
     const sumIn = (arr) => arr.reduce((s, x) => s + x.valor, 0);
-    const byMonth = (arr, m) => arr.filter((x) => monthKey(x.fecha) === m);
 
-    const monthly = months.map((m) => {
-      const ing = sumIn(byMonth(ingresos, m));
-      const gas = sumIn(byMonth(gastos, m));
-      const aho = sumIn(byMonth(ahorros, m));
-      return { month: m, ingresos: ing, gastos: gas, ahorro: aho, libre: ing - gas - aho };
+    const byPeriod = (arr, period) => {
+      if (!period) return [];
+      return arr.filter((x) => inPeriod(x.fecha, period.inicio, period.fin));
+    };
+
+    // Construir resumen por período para la gráfica
+    const periodicSummary = periods.map((p) => {
+      const ing = sumIn(byPeriod(ingresos, p));
+      const gas = sumIn(byPeriod(gastos, p));
+      const aho = sumIn(byPeriod(ahorros, p));
+      return { period: p, ingresos: ing, gastos: gas, ahorro: aho, libre: ing - gas - aho };
     });
 
-    const curM = monthly.find((m) => m.month === curMonth) || { ingresos: 0, gastos: 0, ahorro: 0, libre: 0 };
-    const prevM = monthly.find((m) => m.month === prevMonth) || { ingresos: 0, gastos: 0, ahorro: 0, libre: 0 };
+    const curM = periodicSummary.find((s) => s.period?.key === curPeriod?.key)
+      || { ingresos: 0, gastos: 0, ahorro: 0, libre: 0 };
+    const prevM = periodicSummary.find((s) => s.period?.key === prevPeriod?.key)
+      || { ingresos: 0, gastos: 0, ahorro: 0, libre: 0 };
 
     const curGastosByCat = {};
-    byMonth(gastos, curMonth).forEach((g) => {
+    byPeriod(gastos, curPeriod).forEach((g) => {
       curGastosByCat[g.categoria] = (curGastosByCat[g.categoria] || 0) + g.valor;
     });
     const prevGastosByCat = {};
-    byMonth(gastos, prevMonth || "").forEach((g) => {
+    byPeriod(gastos, prevPeriod).forEach((g) => {
       prevGastosByCat[g.categoria] = (prevGastosByCat[g.categoria] || 0) + g.valor;
     });
 
     const catRanking = Object.entries(curGastosByCat).sort((a, b) => b[1] - a[1]);
     const topCat = catRanking[0] || null;
 
-    const last3 = monthly.slice(-4, -1); // up to 3 months before current
+    const last3 = periodicSummary.slice(-4, -1);
     const avgAhorro3 = last3.length ? last3.reduce((s, m) => s + m.ahorro, 0) / last3.length : 0;
 
-    const impulsivos = byMonth(gastos, curMonth).filter((g) => g.impulsivo);
+    const impulsivos = byPeriod(gastos, curPeriod).filter((g) => g.impulsivo);
     const impulsivoTotal = sumIn(impulsivos);
     const impulsivoPct = curM.gastos > 0 ? (impulsivoTotal / curM.gastos) * 100 : 0;
 
-    // small frequent expenses ("gastos hormiga"): many entries under a threshold
-    const small = byMonth(gastos, curMonth).filter((g) => g.valor > 0 && g.valor <= 25000);
+    const small = byPeriod(gastos, curPeriod).filter((g) => g.valor > 0 && g.valor <= 25000);
     const smallTotal = sumIn(small);
+
+    // Crédito acumulado para próximo período
+    const creditoAcumulado = byPeriod(gastos, curPeriod)
+      .filter((g) => g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes");
+    const totalAcumulado = sumIn(creditoAcumulado);
 
     const limiteStatus = Object.entries(limites || {}).map(([cat, limite]) => {
       const gastado = curGastosByCat[cat] || 0;
@@ -215,52 +273,36 @@ function useAnalytics(data) {
       return { ...meta, restante, mesesEstimados, pct };
     });
 
-    // recommendations engine
     const librePct = curM.ingresos > 0 ? (curM.libre / curM.ingresos) * 100 : 0;
     const recs = [];
+
     limiteStatus.forEach((l) => {
-      if (l.pct >= 100) {
-        recs.push({ tipo: "critico", texto: `Superaste el límite de ${l.categoria} este mes (${fmt(l.gastado)} de ${fmt(l.limite)}).` });
-      } else if (l.pct >= 80) {
-        recs.push({ tipo: "alerta", texto: `Estás cerca del límite en ${l.categoria}: ya usaste ${Math.round(l.pct)}%.` });
-      }
+      if (l.pct >= 100) recs.push({ tipo: "critico", texto: `Superaste el límite de ${l.categoria} este período (${fmt(l.gastado)} de ${fmt(l.limite)}).` });
+      else if (l.pct >= 80) recs.push({ tipo: "alerta", texto: `Estás cerca del límite en ${l.categoria}: ya usaste ${Math.round(l.pct)}%.` });
     });
-    if (prevMonth) {
+    if (prevPeriod) {
       Object.entries(curGastosByCat).forEach(([cat, val]) => {
         const prev = prevGastosByCat[cat] || 0;
         if (prev > 0 && val > prev * 1.2) {
           const pctUp = Math.round(((val - prev) / prev) * 100);
-          recs.push({ tipo: "info", texto: `Tus gastos en ${cat.toLowerCase()} subieron ${pctUp}% frente al mes anterior.` });
+          recs.push({ tipo: "info", texto: `Tus gastos en ${cat.toLowerCase()} subieron ${pctUp}% frente al período anterior.` });
         }
       });
     }
-    if (avgAhorro3 > 0 && curM.ahorro < avgAhorro3) {
-      recs.push({ tipo: "alerta", texto: `Este mes ahorraste menos que el promedio de los últimos meses (${fmt(curM.ahorro)} vs ${fmt(avgAhorro3)}).` });
-    }
-    if (impulsivoPct > 25) {
-      recs.push({ tipo: "alerta", texto: `Tus gastos impulsivos representan ${Math.round(impulsivoPct)}% de lo gastado este mes.` });
-    }
-    if (small.length >= 4) {
-      recs.push({ tipo: "info", texto: `Detectamos ${small.length} gastos pequeños frecuentes ("gastos hormiga") que suman ${fmt(smallTotal)}.` });
-    }
-    if (curM.ingresos > 0 && librePct < 10) {
-      recs.push({ tipo: "critico", texto: `Tu margen libre este mes es bajo (${Math.round(librePct)}%). Vale la pena ajustar gastos variables.` });
-    }
+    if (avgAhorro3 > 0 && curM.ahorro < avgAhorro3) recs.push({ tipo: "alerta", texto: `Este período ahorraste menos que el promedio de los últimos (${fmt(curM.ahorro)} vs ${fmt(avgAhorro3)}).` });
+    if (impulsivoPct > 25) recs.push({ tipo: "alerta", texto: `Tus gastos impulsivos representan ${Math.round(impulsivoPct)}% de lo gastado este período.` });
+    if (small.length >= 4) recs.push({ tipo: "info", texto: `Detectamos ${small.length} gastos pequeños frecuentes ("gastos hormiga") que suman ${fmt(smallTotal)}.` });
+    if (curM.ingresos > 0 && librePct < 10) recs.push({ tipo: "critico", texto: `Tu margen libre es bajo (${Math.round(librePct)}%). Vale la pena ajustar gastos variables.` });
+    if (totalAcumulado > 0) recs.push({ tipo: "alerta", texto: `Tienes ${fmt(totalAcumulado)} acumulados en tarjeta de crédito que llegarán al próximo período.` });
     metasConProyeccion.forEach((m) => {
-      if (m.pct >= 100) {
-        recs.push({ tipo: "exito", texto: `¡Cumpliste la meta "${m.nombre}"! Considera definir una nueva meta.` });
-      } else if (m.mesesEstimados) {
-        recs.push({ tipo: "info", texto: `A tu ritmo actual, alcanzarás "${m.nombre}" en aproximadamente ${m.mesesEstimados} meses.` });
-      }
+      if (m.pct >= 100) recs.push({ tipo: "exito", texto: `¡Cumpliste la meta "${m.nombre}"! 🎉 Considera definir una nueva meta.` });
+      else if (m.mesesEstimados) recs.push({ tipo: "info", texto: `A tu ritmo actual, alcanzarás "${m.nombre}" en aproximadamente ${m.mesesEstimados} períodos.` });
     });
     if (topCat && curM.ingresos > 0) {
       const pctOfIncome = (topCat[1] / curM.ingresos) * 100;
-      if (pctOfIncome > 15) {
-        recs.push({ tipo: "info", texto: `${topCat[0]} es tu categoría con mayor gasto: ${Math.round(pctOfIncome)}% de tu ingreso.` });
-      }
+      if (pctOfIncome > 15) recs.push({ tipo: "info", texto: `${topCat[0]} es tu categoría con mayor gasto: ${Math.round(pctOfIncome)}% de tu ingreso.` });
     }
 
-    // semáforo: green / amber / red based on libre% and limit breaches
     const anyOver100 = limiteStatus.some((l) => l.pct >= 100);
     const anyOver80 = limiteStatus.some((l) => l.pct >= 80);
     let semaforo = "verde";
@@ -268,11 +310,11 @@ function useAnalytics(data) {
     else if (anyOver80 || librePct < 15) semaforo = "amarillo";
 
     return {
-      months, monthly, curMonth, prevMonth, curM, prevM,
+      periods, periodicSummary, curPeriod, prevPeriod, curM, prevM,
       curGastosByCat, prevGastosByCat, catRanking, topCat,
       avgAhorro3, impulsivoTotal, impulsivoPct, smallTotal, smallCount: small.length,
-      limiteStatus, tasaAhorro, pctGastoSobreIngreso, libre: curM.libre, librePct,
-      metasConProyeccion, recs, semaforo,
+      totalAcumulado, limiteStatus, tasaAhorro, pctGastoSobreIngreso,
+      libre: curM.libre, librePct, metasConProyeccion, recs, semaforo,
     };
   }, [data]);
 }
@@ -347,6 +389,8 @@ function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustom
   const [metodo, setMetodo] = useState(METODOS[0]);
   const [impulsivo, setImpulsivo] = useState(false);
   const [metaId, setMetaId] = useState("");
+  const [creditoTipo, setCreditoTipo] = useState(CREDITO_TIPOS[0]);
+  const [cuotas, setCuotas] = useState("");
 
   useEffect(() => {
     if (open) {
@@ -355,7 +399,7 @@ function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustom
       setCategoria(type === "gasto" ? CATS_GASTO[0] : type === "ingreso" ? CATS_INGRESO[0] : "");
       setCustomCatName("");
       setDescripcion("");
-      setMetodo(METODOS[0]);
+      setMetodo(METODOS[0]); setCreditoTipo(CREDITO_TIPOS[0]); setCuotas("");
       setImpulsivo(false);
       setMetaId("");
     }
@@ -368,7 +412,10 @@ function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustom
     if (!num || num <= 0) return;
     const finalCat = categoria === "Otros gastos" && customCatName.trim() ? customCatName.trim() : categoria;
     if (type === "gasto") {
-      onSave({ id: uid(), fecha, valor: num, categoria: finalCat, descripcion, metodo, impulsivo });
+      onSave({ id: uid(), fecha, valor: num, categoria: finalCat, descripcion, metodo, impulsivo,
+        creditoTipo: metodo === "Crédito" ? creditoTipo : null,
+        cuotas: metodo === "Crédito" && creditoTipo === "Diferir en cuotas" ? parseInt(cuotas) || null : null,
+      });
     } else if (type === "ingreso") {
       onSave({ id: uid(), fecha, valor: num, categoria, fuente: descripcion, notas: "" });
     } else {
@@ -407,6 +454,20 @@ function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustom
               {METODOS.map((m) => <option key={m} value={m}>{m}</option>)}
             </SelectInput>
           </Field>
+          {metodo === "Crédito" && (
+            <>
+              <Field label="💳 ¿Cómo se paga este crédito?">
+                <SelectInput value={creditoTipo} onChange={(e) => setCreditoTipo(e.target.value)}>
+                  {CREDITO_TIPOS.map((t) => <option key={t} value={t}>{t}</option>)}
+                </SelectInput>
+              </Field>
+              {creditoTipo === "Diferir en cuotas" && (
+                <Field label="Número de cuotas">
+                  <TextInput type="number" inputMode="numeric" placeholder="Ej: 3" value={cuotas} onChange={(e) => setCuotas(e.target.value)} />
+                </Field>
+              )}
+            </>
+          )}
           <label className="flex items-center gap-2.5 mb-5 cursor-pointer select-none">
             <input type="checkbox" checked={impulsivo} onChange={(e) => setImpulsivo(e.target.checked)} className="w-4 h-4" />
             <span className="text-sm font-utility" style={{ color: "var(--ink)" }}>Fue un gasto impulsivo</span>
@@ -469,7 +530,7 @@ function Dashboard({ analytics, onNavigate }) {
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs font-utility uppercase tracking-wide opacity-60" style={{ color: "var(--ink)" }}>
-            {monthLabel(analytics.curMonth)}
+            {analytics.curPeriod ? `Desde el ${periodLabel(analytics.curPeriod.inicio)}` : "Sin período activo"}
           </p>
           <h1 className="font-display text-[28px] leading-tight" style={{ color: "var(--ink)" }}>Tu mes en bonito ✨</h1>
         </div>
@@ -658,7 +719,7 @@ function History({ data, onDelete }) {
                     {x.categoria ? `${catEmoji(x.categoria)} ${x.categoria}` : (x.fuente || x.observaciones || "Movimiento")}
                   </p>
                   <p className="text-xs font-utility opacity-55" style={{ color: "var(--ink)" }}>
-                    {x.fecha} {x.metodo ? `· ${x.metodo}` : ""} {x.impulsivo ? "· Impulsivo" : ""}
+                    {x.fecha} {x.metodo ? `· ${x.metodo}` : ""} {x.creditoTipo ? `· ${x.creditoTipo}${x.cuotas ? ` (${x.cuotas}c)` : ""}` : ""} {x.impulsivo ? "· Impulsivo" : ""}
                   </p>
                 </div>
                 <span className="font-mono text-sm font-semibold flex-shrink-0" style={{ color: cfg.color }}>
@@ -681,8 +742,8 @@ function History({ data, onDelete }) {
 ------------------------------------------------------------------------- */
 function Analysis({ analytics }) {
   if (!analytics) return null;
-  const { monthly, catRanking, curM, limiteStatus, recs, impulsivoPct, smallTotal, smallCount } = analytics;
-  const maxVal = Math.max(...monthly.map((m) => Math.max(m.ingresos, m.gastos)), 1);
+  const { periodicSummary, catRanking, curM, limiteStatus, recs, impulsivoPct, smallTotal, smallCount, totalAcumulado } = analytics;
+  const maxVal = Math.max(...periodicSummary.map((s) => Math.max(s.ingresos, s.gastos)), 1);
 
   return (
     <div className="px-5 pt-6 pb-4 space-y-6">
@@ -690,19 +751,19 @@ function Analysis({ analytics }) {
 
       {/* Income vs expense bars */}
       <section>
-        <h3 className="font-display text-[16px] mb-3" style={{ color: "var(--ink)" }}>Ingresos vs. gastos por mes</h3>
+        <h3 className="font-display text-[16px] mb-3" style={{ color: "var(--ink)" }}>Ingresos vs. gastos por período 💸</h3>
         <div className="rounded-[20px] p-4 space-y-3" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
-          {monthly.slice(-6).map((m) => (
-            <div key={m.month}>
+          {periodicSummary.slice(-6).map((s) => (
+            <div key={s.period.key}>
               <div className="flex justify-between text-xs font-utility mb-1 opacity-70" style={{ color: "var(--ink)" }}>
-                <span>{monthLabel(m.month)}</span>
-                <span className="font-mono">${fmt(m.libre)} libre</span>
+                <span>{periodLabel(s.period.inicio)}</span>
+                <span className="font-mono">${fmt(s.libre)} libre</span>
               </div>
               <div className="flex gap-1 h-2.5">
-                <div className="rounded-full" style={{ width: `${(m.ingresos / maxVal) * 100}%`, background: "var(--emerald)" }} />
+                <div className="rounded-full" style={{ width: `${(s.ingresos / maxVal) * 100}%`, background: "var(--emerald)" }} />
               </div>
               <div className="flex gap-1 h-2.5 mt-1">
-                <div className="rounded-full" style={{ width: `${(m.gastos / maxVal) * 100}%`, background: "var(--red)" }} />
+                <div className="rounded-full" style={{ width: `${(s.gastos / maxVal) * 100}%`, background: "var(--red)" }} />
               </div>
             </div>
           ))}
@@ -773,6 +834,13 @@ function Analysis({ analytics }) {
             <p className="font-mono text-lg font-semibold" style={{ color: "var(--ink)" }}>${fmt(smallTotal)}</p>
             <p className="text-[11px] font-utility opacity-50" style={{ color: "var(--ink)" }}>{smallCount} movimientos</p>
           </div>
+          {totalAcumulado > 0 && (
+            <div className="rounded-[18px] p-3.5 col-span-2" style={{ background: "var(--amber-soft)", border: "1px solid var(--line)" }}>
+              <p className="text-[10px] font-utility uppercase tracking-wide opacity-70 mb-1" style={{ color: "var(--ink)" }}>💳 Crédito acumulado próximo período</p>
+              <p className="font-mono text-lg font-semibold" style={{ color: "var(--amber)" }}>${fmt(totalAcumulado)}</p>
+              <p className="text-[11px] font-utility opacity-60 mt-0.5" style={{ color: "var(--ink)" }}>Este monto llegará a tu próxima quincena</p>
+            </div>
+          )}
         </div>
       </section>
 
