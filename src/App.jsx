@@ -219,9 +219,20 @@ function useAnalytics(data) {
     // Construir resumen por período para la gráfica
     const periodicSummary = periods.map((p) => {
       const ing = sumIn(byPeriod(ingresos, p));
-      const gas = sumIn(byPeriod(gastos, p));
+      const gastosDelPeriodo = byPeriod(gastos, p);
+
+      // Solo cuentan como gasto real los que NO son "Acumula próximo mes"
+      // Para "Diferir en cuotas", solo se descuenta 1/cuotas del total
+      const gasReal = gastosDelPeriodo.reduce((s, g) => {
+        if (g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes") return s; // no descuenta
+        if (g.metodo === "Crédito" && g.creditoTipo === "Diferir en cuotas" && g.cuotas > 1) {
+          return s + g.valor / g.cuotas; // solo la cuota de este período
+        }
+        return s + g.valor;
+      }, 0);
+
       const aho = sumIn(byPeriod(ahorros, p));
-      return { period: p, ingresos: ing, gastos: gas, ahorro: aho, libre: ing - gas - aho };
+      return { period: p, ingresos: ing, gastos: gasReal, ahorro: aho, libre: ing - gasReal - aho };
     });
 
     const curM = periodicSummary.find((s) => s.period?.key === curPeriod?.key)
@@ -231,12 +242,30 @@ function useAnalytics(data) {
 
     const curGastosByCat = {};
     byPeriod(gastos, curPeriod).forEach((g) => {
-      curGastosByCat[g.categoria] = (curGastosByCat[g.categoria] || 0) + g.valor;
+      if (g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes") return; // no cuenta ahora
+      const valorReal = (g.metodo === "Crédito" && g.creditoTipo === "Diferir en cuotas" && g.cuotas > 1)
+        ? g.valor / g.cuotas
+        : g.valor;
+      curGastosByCat[g.categoria] = (curGastosByCat[g.categoria] || 0) + valorReal;
     });
     const prevGastosByCat = {};
     byPeriod(gastos, prevPeriod).forEach((g) => {
-      prevGastosByCat[g.categoria] = (prevGastosByCat[g.categoria] || 0) + g.valor;
+      if (g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes") return;
+      const valorReal = (g.metodo === "Crédito" && g.creditoTipo === "Diferir en cuotas" && g.cuotas > 1)
+        ? g.valor / g.cuotas
+        : g.valor;
+      prevGastosByCat[g.categoria] = (prevGastosByCat[g.categoria] || 0) + valorReal;
     });
+
+    // Deuda acumulada para el próximo período (créditos que no se han pagado aún)
+    const creditoAcumulado = byPeriod(gastos, curPeriod)
+      .filter((g) => g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes");
+    const totalAcumulado = sumIn(creditoAcumulado);
+
+    // Cuotas pendientes de gastos diferidos (lo que falta por pagar en períodos futuros)
+    const cuotasPendientes = byPeriod(gastos, curPeriod)
+      .filter((g) => g.metodo === "Crédito" && g.creditoTipo === "Diferir en cuotas" && g.cuotas > 1)
+      .reduce((s, g) => s + (g.valor - g.valor / g.cuotas), 0); // total menos la cuota actual
 
     const catRanking = Object.entries(curGastosByCat).sort((a, b) => b[1] - a[1]);
     const topCat = catRanking[0] || null;
@@ -250,11 +279,6 @@ function useAnalytics(data) {
 
     const small = byPeriod(gastos, curPeriod).filter((g) => g.valor > 0 && g.valor <= 25000);
     const smallTotal = sumIn(small);
-
-    // Crédito acumulado para próximo período
-    const creditoAcumulado = byPeriod(gastos, curPeriod)
-      .filter((g) => g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes");
-    const totalAcumulado = sumIn(creditoAcumulado);
 
     const limiteStatus = Object.entries(limites || {}).map(([cat, limite]) => {
       const gastado = curGastosByCat[cat] || 0;
@@ -313,7 +337,7 @@ function useAnalytics(data) {
       periods, periodicSummary, curPeriod, prevPeriod, curM, prevM,
       curGastosByCat, prevGastosByCat, catRanking, topCat,
       avgAhorro3, impulsivoTotal, impulsivoPct, smallTotal, smallCount: small.length,
-      totalAcumulado, limiteStatus, tasaAhorro, pctGastoSobreIngreso,
+      totalAcumulado, cuotasPendientes, limiteStatus, tasaAhorro, pctGastoSobreIngreso,
       libre: curM.libre, librePct, metasConProyeccion, recs, semaforo,
     };
   }, [data]);
@@ -522,7 +546,7 @@ function SemaforoBadge({ semaforo }) {
 
 function Dashboard({ analytics, onNavigate }) {
   if (!analytics) return null;
-  const { curM, tasaAhorro, libre, semaforo, recs, metasConProyeccion } = analytics;
+  const { curM, tasaAhorro, libre, semaforo, recs, metasConProyeccion, totalAcumulado, cuotasPendientes } = analytics;
   const topRecs = recs.slice(0, 3);
 
   return (
@@ -573,6 +597,33 @@ function Dashboard({ analytics, onNavigate }) {
           <div className="h-full rounded-full" style={{ width: `${Math.min(tasaAhorro, 100)}%`, background: "var(--emerald)" }} />
         </div>
       </div>
+
+      {/* Deuda pendiente próximo período */}
+      {(totalAcumulado > 0 || cuotasPendientes > 0) && (
+        <div className="rounded-[20px] p-4" style={{ background: "var(--amber-soft)", border: "1px solid var(--amber)" }}>
+          <p className="text-xs font-utility font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--amber)" }}>
+            💳 Lo que llega al próximo período
+          </p>
+          {totalAcumulado > 0 && (
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-sm font-utility opacity-80" style={{ color: "var(--ink)" }}>Crédito acumulado</span>
+              <span className="font-mono text-sm font-semibold" style={{ color: "var(--amber)" }}>${fmt(totalAcumulado)}</span>
+            </div>
+          )}
+          {cuotasPendientes > 0 && (
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-sm font-utility opacity-80" style={{ color: "var(--ink)" }}>Cuotas restantes</span>
+              <span className="font-mono text-sm font-semibold" style={{ color: "var(--amber)" }}>${fmt(cuotasPendientes)}</span>
+            </div>
+          )}
+          <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--amber)", opacity: 0.7 }}>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-utility font-semibold" style={{ color: "var(--ink)" }}>Total deuda pendiente</span>
+              <span className="font-mono text-sm font-semibold" style={{ color: "var(--red)" }}>${fmt(totalAcumulado + cuotasPendientes)}</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Recommendations preview */}
       {topRecs.length > 0 && (
@@ -742,7 +793,7 @@ function History({ data, onDelete }) {
 ------------------------------------------------------------------------- */
 function Analysis({ analytics }) {
   if (!analytics) return null;
-  const { periodicSummary, catRanking, curM, limiteStatus, recs, impulsivoPct, smallTotal, smallCount, totalAcumulado } = analytics;
+  const { periodicSummary, catRanking, curM, limiteStatus, recs, impulsivoPct, smallTotal, smallCount, totalAcumulado, cuotasPendientes } = analytics;
   const maxVal = Math.max(...periodicSummary.map((s) => Math.max(s.ingresos, s.gastos)), 1);
 
   return (
@@ -834,11 +885,25 @@ function Analysis({ analytics }) {
             <p className="font-mono text-lg font-semibold" style={{ color: "var(--ink)" }}>${fmt(smallTotal)}</p>
             <p className="text-[11px] font-utility opacity-50" style={{ color: "var(--ink)" }}>{smallCount} movimientos</p>
           </div>
-          {totalAcumulado > 0 && (
-            <div className="rounded-[18px] p-3.5 col-span-2" style={{ background: "var(--amber-soft)", border: "1px solid var(--line)" }}>
-              <p className="text-[10px] font-utility uppercase tracking-wide opacity-70 mb-1" style={{ color: "var(--ink)" }}>💳 Crédito acumulado próximo período</p>
-              <p className="font-mono text-lg font-semibold" style={{ color: "var(--amber)" }}>${fmt(totalAcumulado)}</p>
-              <p className="text-[11px] font-utility opacity-60 mt-0.5" style={{ color: "var(--ink)" }}>Este monto llegará a tu próxima quincena</p>
+          {(totalAcumulado > 0 || cuotasPendientes > 0) && (
+            <div className="rounded-[18px] p-3.5 col-span-2" style={{ background: "var(--amber-soft)", border: "1px solid var(--amber)" }}>
+              <p className="text-[10px] font-utility uppercase tracking-wide opacity-70 mb-2" style={{ color: "var(--ink)" }}>💳 Deuda pendiente próximo período</p>
+              {totalAcumulado > 0 && (
+                <div className="flex justify-between text-xs font-utility mb-1" style={{ color: "var(--ink)" }}>
+                  <span className="opacity-70">Crédito acumulado</span>
+                  <span className="font-mono font-semibold" style={{ color: "var(--amber)" }}>${fmt(totalAcumulado)}</span>
+                </div>
+              )}
+              {cuotasPendientes > 0 && (
+                <div className="flex justify-between text-xs font-utility mb-1" style={{ color: "var(--ink)" }}>
+                  <span className="opacity-70">Cuotas restantes</span>
+                  <span className="font-mono font-semibold" style={{ color: "var(--amber)" }}>${fmt(cuotasPendientes)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-xs font-utility mt-1.5 pt-1.5" style={{ color: "var(--ink)", borderTop: "1px solid var(--amber)" }}>
+                <span className="font-semibold">Total</span>
+                <span className="font-mono font-semibold" style={{ color: "var(--red)" }}>${fmt(totalAcumulado + cuotasPendientes)}</span>
+              </div>
             </div>
           )}
         </div>
