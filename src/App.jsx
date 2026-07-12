@@ -41,6 +41,10 @@ const CATEGORY_EMOJI = {
   "Regalos": "🎁",
   "Otros gastos": "✨",
   "Salario": "💼",
+  "Prima": "🎉",
+  "Vacaciones": "🌴",
+  "Bonificación": "⭐",
+  "Cesantías": "🏦",
   "Independiente": "🧵",
   "Regalo": "🎀",
   "Inversión": "🌱",
@@ -52,7 +56,7 @@ const CATS_GASTO = [
   "Servicios públicos", "Transporte", "Gastos personales", "Desayunos",
   "Almuerzos", "Fines de semana", "Regalos", "Deudas", "Otros gastos",
 ];
-const CATS_INGRESO = ["Salario", "Independiente", "Regalo", "Inversión", "Otro"];
+const CATS_INGRESO = ["Salario", "Prima", "Vacaciones", "Bonificación", "Cesantías", "Independiente", "Regalo", "Inversión", "Otro"];
 const METODOS = ["Efectivo", "Débito", "Crédito", "Transferencia"];
 const CREDITO_TIPOS = ["Pago inmediato", "Acumula próximo mes", "Diferir en cuotas"];
 
@@ -145,6 +149,9 @@ const seedData = () => {
     metas: [
       { id: uid(), nombre: "Cuota inicial vivienda", monto: 20000000, fecha: "2027-12-31", ahorroAcumulado: 400000 },
     ],
+    deudas: [
+      { id: uid(), nombre: "Préstamo banco", montoTotal: 5000000, saldoPendiente: 4000000, abonos: [], fecha: todayISO(), notas: "" },
+    ],
     limites: {
       "Servicios públicos": 220000, "Transporte": 150000, "Gastos personales": 80000,
       "Desayunos": 150000, "Almuerzos": 200000, "Fines de semana": 150000,
@@ -168,7 +175,10 @@ function useStorage() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        setData(JSON.parse(raw));
+        const parsed = JSON.parse(raw);
+        // migración: añadir deudas si no existe en datos antiguos
+        if (!parsed.deudas) parsed.deudas = [];
+        setData(parsed);
       } else {
         const seed = seedData();
         setData(seed);
@@ -221,13 +231,11 @@ function useAnalytics(data) {
       const ing = sumIn(byPeriod(ingresos, p));
       const gastosDelPeriodo = byPeriod(gastos, p);
 
-      // Solo cuentan como gasto real los que NO son "Acumula próximo mes"
-      // Para "Diferir en cuotas", solo se descuenta 1/cuotas del total
+      // Solo cuentan como gasto real los que NO son crédito diferido
+      // "Acumula próximo mes" y "Diferir en cuotas" NO se descuentan ahora
       const gasReal = gastosDelPeriodo.reduce((s, g) => {
-        if (g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes") return s; // no descuenta
-        if (g.metodo === "Crédito" && g.creditoTipo === "Diferir en cuotas" && g.cuotas > 1) {
-          return s + g.valor / g.cuotas; // solo la cuota de este período
-        }
+        if (g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes") return s;
+        if (g.metodo === "Crédito" && g.creditoTipo === "Diferir en cuotas") return s; // nada se descuenta ahora
         return s + g.valor;
       }, 0);
 
@@ -242,30 +250,24 @@ function useAnalytics(data) {
 
     const curGastosByCat = {};
     byPeriod(gastos, curPeriod).forEach((g) => {
-      if (g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes") return; // no cuenta ahora
-      const valorReal = (g.metodo === "Crédito" && g.creditoTipo === "Diferir en cuotas" && g.cuotas > 1)
-        ? g.valor / g.cuotas
-        : g.valor;
-      curGastosByCat[g.categoria] = (curGastosByCat[g.categoria] || 0) + valorReal;
+      if (g.metodo === "Crédito" && (g.creditoTipo === "Acumula próximo mes" || g.creditoTipo === "Diferir en cuotas")) return;
+      curGastosByCat[g.categoria] = (curGastosByCat[g.categoria] || 0) + g.valor;
     });
     const prevGastosByCat = {};
     byPeriod(gastos, prevPeriod).forEach((g) => {
-      if (g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes") return;
-      const valorReal = (g.metodo === "Crédito" && g.creditoTipo === "Diferir en cuotas" && g.cuotas > 1)
-        ? g.valor / g.cuotas
-        : g.valor;
-      prevGastosByCat[g.categoria] = (prevGastosByCat[g.categoria] || 0) + valorReal;
+      if (g.metodo === "Crédito" && (g.creditoTipo === "Acumula próximo mes" || g.creditoTipo === "Diferir en cuotas")) return;
+      prevGastosByCat[g.categoria] = (prevGastosByCat[g.categoria] || 0) + g.valor;
     });
 
-    // Deuda acumulada para el próximo período (créditos que no se han pagado aún)
+    // Deuda acumulada: créditos que no se pagan en este período
     const creditoAcumulado = byPeriod(gastos, curPeriod)
       .filter((g) => g.metodo === "Crédito" && g.creditoTipo === "Acumula próximo mes");
     const totalAcumulado = sumIn(creditoAcumulado);
 
-    // Cuotas pendientes de gastos diferidos (lo que falta por pagar en períodos futuros)
+    // Cuotas pendientes: total de lo diferido en cuotas (se paga todo en próximos períodos)
     const cuotasPendientes = byPeriod(gastos, curPeriod)
-      .filter((g) => g.metodo === "Crédito" && g.creditoTipo === "Diferir en cuotas" && g.cuotas > 1)
-      .reduce((s, g) => s + (g.valor - g.valor / g.cuotas), 0); // total menos la cuota actual
+      .filter((g) => g.metodo === "Crédito" && g.creditoTipo === "Diferir en cuotas")
+      .reduce((s, g) => s + g.valor, 0);
 
     const catRanking = Object.entries(curGastosByCat).sort((a, b) => b[1] - a[1]);
     const topCat = catRanking[0] || null;
@@ -404,7 +406,7 @@ function SelectInput({ children, ...props }) {
 /* ----------------------------------------------------------------------
    ADD MOVEMENT SHEET
 ------------------------------------------------------------------------- */
-function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustomCat }) {
+function AddMovementSheet({ open, onClose, type, onSave, initialData }) {
   const [fecha, setFecha] = useState(todayISO());
   const [valor, setValor] = useState("");
   const [categoria, setCategoria] = useState(type === "gasto" ? CATS_GASTO[0] : type === "ingreso" ? CATS_INGRESO[0] : "");
@@ -412,43 +414,59 @@ function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustom
   const [descripcion, setDescripcion] = useState("");
   const [metodo, setMetodo] = useState(METODOS[0]);
   const [impulsivo, setImpulsivo] = useState(false);
-  const [metaId, setMetaId] = useState("");
   const [creditoTipo, setCreditoTipo] = useState(CREDITO_TIPOS[0]);
   const [cuotas, setCuotas] = useState("");
 
   useEffect(() => {
     if (open) {
-      setFecha(todayISO());
-      setValor("");
-      setCategoria(type === "gasto" ? CATS_GASTO[0] : type === "ingreso" ? CATS_INGRESO[0] : "");
-      setCustomCatName("");
-      setDescripcion("");
-      setMetodo(METODOS[0]); setCreditoTipo(CREDITO_TIPOS[0]); setCuotas("");
-      setImpulsivo(false);
-      setMetaId("");
+      if (initialData) {
+        // modo edición: prellenar con datos existentes
+        setFecha(initialData.fecha || todayISO());
+        setValor(String(initialData.valor || ""));
+        setCategoria(initialData.categoria || (type === "gasto" ? CATS_GASTO[0] : CATS_INGRESO[0]));
+        setDescripcion(initialData.descripcion || initialData.fuente || initialData.observaciones || "");
+        setMetodo(initialData.metodo || METODOS[0]);
+        setImpulsivo(initialData.impulsivo || false);
+        setCreditoTipo(initialData.creditoTipo || CREDITO_TIPOS[0]);
+        setCuotas(initialData.cuotas ? String(initialData.cuotas) : "");
+        setCustomCatName("");
+      } else {
+        // modo nuevo
+        setFecha(todayISO());
+        setValor("");
+        setCategoria(type === "gasto" ? CATS_GASTO[0] : type === "ingreso" ? CATS_INGRESO[0] : "");
+        setCustomCatName(""); setDescripcion("");
+        setMetodo(METODOS[0]); setCreditoTipo(CREDITO_TIPOS[0]); setCuotas("");
+        setImpulsivo(false);
+      }
     }
-  }, [open, type]);
+  }, [open, type, initialData]);
 
   if (!open) return null;
+
+  const isEditing = !!initialData;
 
   const handleSubmit = () => {
     const num = parseFloat(valor);
     if (!num || num <= 0) return;
     const finalCat = categoria === "Otros gastos" && customCatName.trim() ? customCatName.trim() : categoria;
+    const baseId = initialData?.id || uid();
     if (type === "gasto") {
-      onSave({ id: uid(), fecha, valor: num, categoria: finalCat, descripcion, metodo, impulsivo,
+      onSave({ id: baseId, fecha, valor: num, categoria: finalCat, descripcion, metodo, impulsivo,
         creditoTipo: metodo === "Crédito" ? creditoTipo : null,
         cuotas: metodo === "Crédito" && creditoTipo === "Diferir en cuotas" ? parseInt(cuotas) || null : null,
       });
     } else if (type === "ingreso") {
-      onSave({ id: uid(), fecha, valor: num, categoria, fuente: descripcion, notas: "" });
+      onSave({ id: baseId, fecha, valor: num, categoria, fuente: descripcion, notas: "" });
     } else {
-      onSave({ id: uid(), fecha, valor: num, meta: metaId || null, observaciones: descripcion });
+      onSave({ id: baseId, fecha, valor: num, meta: null, observaciones: descripcion });
     }
     onClose();
   };
 
-  const title = type === "gasto" ? "Nuevo gasto" : type === "ingreso" ? "Nuevo ingreso" : "Nuevo ahorro";
+  const title = isEditing
+    ? (type === "gasto" ? "Editar gasto" : type === "ingreso" ? "Editar ingreso" : "Editar ahorro")
+    : (type === "gasto" ? "Nuevo gasto" : type === "ingreso" ? "Nuevo ingreso" : "Nuevo ahorro");
 
   return (
     <Sheet open={open} onClose={onClose} title={title}>
@@ -520,7 +538,7 @@ function AddMovementSheet({ open, onClose, type, onSave, customCats, onAddCustom
         className="w-full mt-2 rounded-xl py-3.5 font-utility font-semibold text-[15px] active:scale-[0.98] transition-transform"
         style={{ background: "var(--lilac)", color: "#FFFFFF" }}
       >
-        Guardar movimiento
+        {isEditing ? "Guardar cambios ✅" : "Guardar movimiento"}
       </button>
     </Sheet>
   );
@@ -557,6 +575,11 @@ function Dashboard({ analytics, onNavigate }) {
             {analytics.curPeriod ? `Desde el ${periodLabel(analytics.curPeriod.inicio)}` : "Sin período activo"}
           </p>
           <h1 className="font-display text-[28px] leading-tight" style={{ color: "var(--ink)" }}>Tu mes en bonito ✨</h1>
+          {curM.ingresos > 0 && (
+            <p className="text-xs font-utility mt-0.5" style={{ color: "var(--emerald)", opacity: 0.8 }}>
+              💰 Total ingresado este período: ${fmt(curM.ingresos)}
+            </p>
+          )}
         </div>
         <SemaforoBadge semaforo={semaforo} />
       </div>
@@ -695,10 +718,11 @@ function MetaPreview({ meta }) {
 /* ----------------------------------------------------------------------
    HISTORY
 ------------------------------------------------------------------------- */
-function History({ data, onDelete }) {
+function History({ data, onDelete, onEdit }) {
   const [filterType, setFilterType] = useState("todos");
   const [filterCat, setFilterCat] = useState("todas");
   const [showFilters, setShowFilters] = useState(false);
+  const [editItem, setEditItem] = useState(null);
 
   const all = useMemo(() => {
     const items = [
@@ -776,6 +800,9 @@ function History({ data, onDelete }) {
                 <span className="font-mono text-sm font-semibold flex-shrink-0" style={{ color: cfg.color }}>
                   {cfg.sign}${fmt(x.valor)}
                 </span>
+                <button onClick={() => setEditItem(x)} className="flex-shrink-0 opacity-50 mr-1" aria-label="Editar">
+                  <Edit3 size={15} style={{ color: "var(--lilac)" }} />
+                </button>
                 <button onClick={() => onDelete(x.tipo, x.id)} className="flex-shrink-0 opacity-40" aria-label="Eliminar">
                   <Trash2 size={15} style={{ color: "var(--ink)" }} />
                 </button>
@@ -783,6 +810,20 @@ function History({ data, onDelete }) {
             );
           })}
         </div>
+      )}
+
+      {/* Sheet de edición */}
+      {editItem && (
+        <AddMovementSheet
+          open={!!editItem}
+          onClose={() => setEditItem(null)}
+          type={editItem.tipo}
+          initialData={editItem}
+          onSave={(updated) => {
+            onEdit(editItem.tipo, updated);
+            setEditItem(null);
+          }}
+        />
       )}
     </div>
   );
@@ -1021,6 +1062,145 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
 /* ----------------------------------------------------------------------
    SETTINGS
 ------------------------------------------------------------------------- */
+/* ----------------------------------------------------------------------
+   DEUDAS MODULE
+   Registro de deudas con abonos y seguimiento de saldo pendiente.
+   Es independiente de los gastos con tarjeta de crédito.
+------------------------------------------------------------------------- */
+function DeudasView({ data, onAddDeuda, onAbonarDeuda, onDeleteDeuda }) {
+  const [showAddDeuda, setShowAddDeuda] = useState(false);
+  const [nombre, setNombre] = useState("");
+  const [monto, setMonto] = useState("");
+  const [notas, setNotas] = useState("");
+  const [abonoValues, setAbonoValues] = useState({});
+
+  const handleAddDeuda = () => {
+    const m = parseFloat(monto);
+    if (!nombre.trim() || !m || m <= 0) return;
+    onAddDeuda({ id: uid(), nombre: nombre.trim(), montoTotal: m, saldoPendiente: m, abonos: [], fecha: todayISO(), notas: notas.trim() });
+    setNombre(""); setMonto(""); setNotas("");
+    setShowAddDeuda(false);
+  };
+
+  const handleAbono = (deudaId, saldoActual) => {
+    const val = parseFloat(abonoValues[deudaId]);
+    if (!val || val <= 0) return;
+    const abono = Math.min(val, saldoActual); // no abonar más de lo que se debe
+    onAbonarDeuda(deudaId, abono);
+    setAbonoValues((prev) => ({ ...prev, [deudaId]: "" }));
+  };
+
+  const deudas = data.deudas || [];
+
+  return (
+    <div className="px-5 pt-6 pb-4 space-y-5">
+      <div className="flex items-center justify-between">
+        <h1 className="font-display text-[26px]" style={{ color: "var(--ink)" }}>Mis deudas 🏦</h1>
+        <button onClick={() => setShowAddDeuda(true)} className="flex items-center gap-1 text-xs font-utility font-medium px-3 py-1.5 rounded-full" style={{ background: "var(--lilac-soft)", color: "var(--lilac)" }}>
+          <Plus size={14} /> Nueva
+        </button>
+      </div>
+
+      {deudas.length === 0 && (
+        <div className="text-center py-12">
+          <p className="text-3xl mb-2">🎉</p>
+          <p className="font-utility text-sm opacity-50" style={{ color: "var(--ink)" }}>Sin deudas registradas. ¡Genial!</p>
+        </div>
+      )}
+
+      <div className="space-y-4">
+        {deudas.map((d) => {
+          const pct = d.montoTotal > 0 ? Math.min(((d.montoTotal - d.saldoPendiente) / d.montoTotal) * 100, 100) : 0;
+          const pagado = d.montoTotal - d.saldoPendiente;
+          return (
+            <div key={d.id} className="rounded-[20px] p-4" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
+              <div className="flex items-start justify-between mb-2">
+                <div>
+                  <p className="font-utility font-semibold text-sm" style={{ color: "var(--ink)" }}>{d.nombre}</p>
+                  {d.notas && <p className="text-xs font-utility opacity-50 mt-0.5" style={{ color: "var(--ink)" }}>{d.notas}</p>}
+                </div>
+                <button onClick={() => onDeleteDeuda(d.id)} className="opacity-30">
+                  <Trash2 size={14} style={{ color: "var(--ink)" }} />
+                </button>
+              </div>
+
+              {/* Barra de progreso */}
+              <div className="h-2.5 rounded-full overflow-hidden mb-2" style={{ background: "var(--line)" }}>
+                <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: pct >= 100 ? "var(--emerald)" : "var(--lilac)" }} />
+              </div>
+
+              <div className="flex justify-between text-xs font-utility mb-3" style={{ color: "var(--ink)" }}>
+                <span className="opacity-60">Pagado: <span className="font-semibold" style={{ color: "var(--emerald)" }}>${fmt(pagado)}</span></span>
+                <span className="opacity-60">Pendiente: <span className="font-semibold" style={{ color: "var(--red)" }}>${fmt(d.saldoPendiente)}</span></span>
+              </div>
+
+              <div className="text-xs font-utility opacity-50 mb-3 text-right" style={{ color: "var(--ink)" }}>
+                Total: ${fmt(d.montoTotal)} · {Math.round(pct)}% pagado
+              </div>
+
+              {d.saldoPendiente > 0 && (
+                <div className="flex gap-2">
+                  <TextInput
+                    type="number"
+                    placeholder="Valor del abono"
+                    value={abonoValues[d.id] || ""}
+                    onChange={(e) => setAbonoValues((prev) => ({ ...prev, [d.id]: e.target.value }))}
+                    className="flex-1"
+                    style={{ fontSize: "14px", padding: "8px 12px" }}
+                  />
+                  <button
+                    onClick={() => handleAbono(d.id, d.saldoPendiente)}
+                    className="px-4 py-2 rounded-xl text-sm font-utility font-semibold"
+                    style={{ background: "var(--lilac)", color: "#fff" }}
+                  >
+                    Abonar
+                  </button>
+                </div>
+              )}
+              {d.saldoPendiente <= 0 && (
+                <div className="text-center py-1">
+                  <span className="text-xs font-utility font-semibold" style={{ color: "var(--emerald)" }}>✅ ¡Deuda pagada!</span>
+                </div>
+              )}
+
+              {/* Historial de abonos */}
+              {d.abonos && d.abonos.length > 0 && (
+                <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--line)" }}>
+                  <p className="text-[10px] font-utility uppercase tracking-wide opacity-50 mb-1.5" style={{ color: "var(--ink)" }}>Abonos realizados</p>
+                  {d.abonos.slice(-3).map((a, i) => (
+                    <div key={i} className="flex justify-between text-xs font-utility opacity-60" style={{ color: "var(--ink)" }}>
+                      <span>{a.fecha}</span>
+                      <span className="font-semibold" style={{ color: "var(--emerald)" }}>+${fmt(a.valor)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <Sheet open={showAddDeuda} onClose={() => setShowAddDeuda(false)} title="Nueva deuda 🏦">
+        <Field label="Nombre de la deuda">
+          <TextInput value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Préstamo banco, Deuda con amiga..." />
+        </Field>
+        <Field label="Monto total de la deuda">
+          <TextInput type="number" value={monto} onChange={(e) => setMonto(e.target.value)} placeholder="0" />
+        </Field>
+        <Field label="Notas (opcional)">
+          <TextInput value={notas} onChange={(e) => setNotas(e.target.value)} placeholder="Ej: Cuota mensual $200.000" />
+        </Field>
+        <button onClick={handleAddDeuda} className="w-full mt-2 rounded-xl py-3.5 font-utility font-semibold text-[15px]" style={{ background: "var(--lilac)", color: "#fff" }}>
+          Registrar deuda
+        </button>
+      </Sheet>
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------------------
+   SETTINGS VIEW
+------------------------------------------------------------------------- */
 function SettingsView({ data, onToggleDark, onExport, error }) {
   return (
     <div className="px-5 pt-6 pb-4 space-y-5">
@@ -1130,6 +1310,26 @@ export default function App() {
     });
   };
 
+  const handleEdit = (tipo, updated) => {
+    updateAndSave((d) => {
+      if (tipo === "gasto") d.gastos = d.gastos.map((x) => x.id === updated.id ? updated : x);
+      else if (tipo === "ingreso") d.ingresos = d.ingresos.map((x) => x.id === updated.id ? updated : x);
+      else if (tipo === "ahorro") d.ahorros = d.ahorros.map((x) => x.id === updated.id ? updated : x);
+      return d;
+    });
+  };
+
+  const handleAddDeuda = (deuda) => updateAndSave((d) => { d.deudas = [...(d.deudas || []), deuda]; return d; });
+  const handleAbonarDeuda = (deudaId, abono) => updateAndSave((d) => {
+    d.deudas = (d.deudas || []).map((deuda) => {
+      if (deuda.id !== deudaId) return deuda;
+      const nuevoSaldo = Math.max(deuda.saldoPendiente - abono, 0);
+      return { ...deuda, saldoPendiente: nuevoSaldo, abonos: [...(deuda.abonos || []), { fecha: todayISO(), valor: abono }] };
+    });
+    return d;
+  });
+  const handleDeleteDeuda = (id) => updateAndSave((d) => { d.deudas = (d.deudas || []).filter((x) => x.id !== id); return d; });
+
   const handleAddMeta = (meta) => updateAndSave((d) => { d.metas.push(meta); return d; });
   const handleUpdateMeta = (id, ahorroAcumulado) => updateAndSave((d) => {
     const m = d.metas.find((x) => x.id === id);
@@ -1159,6 +1359,7 @@ export default function App() {
     { id: "historial", icon: Calendar, label: "Historial" },
     { id: "analisis", icon: BarChart3, label: "Análisis" },
     { id: "metas", icon: Target, label: "Metas" },
+    { id: "deudas", icon: PiggyBank, label: "Deudas" },
     { id: "ajustes", icon: Settings, label: "Ajustes" },
   ];
 
@@ -1182,13 +1383,21 @@ export default function App() {
       <div className="w-full max-w-md min-h-screen flex flex-col" style={{ background: "var(--paper)" }}>
         <div className="flex-1 overflow-y-auto pb-24" style={{ animation: "fadeIn 0.2s ease-out" }}>
           {tab === "dashboard" && <Dashboard analytics={analytics} onNavigate={setTab} />}
-          {tab === "historial" && <History data={data} onDelete={handleDelete} />}
+          {tab === "historial" && <History data={data} onDelete={handleDelete} onEdit={handleEdit} />}
           {tab === "analisis" && <Analysis analytics={analytics} />}
           {tab === "metas" && (
             <GoalsAndLimits
               data={data} analytics={analytics}
               onAddMeta={handleAddMeta} onUpdateMeta={handleUpdateMeta}
               onDeleteMeta={handleDeleteMeta} onUpdateLimit={handleUpdateLimit}
+            />
+          )}
+          {tab === "deudas" && (
+            <DeudasView
+              data={data}
+              onAddDeuda={handleAddDeuda}
+              onAbonarDeuda={handleAbonarDeuda}
+              onDeleteDeuda={handleDeleteDeuda}
             />
           )}
           {tab === "ajustes" && (
