@@ -291,13 +291,68 @@ function useAnalytics(data) {
     const tasaAhorro = curM.ingresos > 0 ? (curM.ahorro / curM.ingresos) * 100 : 0;
     const pctGastoSobreIngreso = curM.ingresos > 0 ? (curM.gastos / curM.ingresos) * 100 : 0;
 
+    // Capacidad de ahorro real: promedio de libre de los últimos períodos
+    // Si no hay histórico, usamos el libre actual
+    const capacidadAhorro = last3.length > 0
+      ? last3.reduce((s, m) => s + Math.max(m.libre, 0), 0) / last3.length
+      : Math.max(curM.libre, 0);
+
+    // Total comprometido en metas y deudas activas (para análisis de capacidad)
+    const totalDeudas = (data.deudas || []).reduce((s, d) => s + d.saldoPendiente, 0);
+
     const metasConProyeccion = (metas || []).map((meta) => {
       const restante = Math.max(meta.monto - (meta.ahorroAcumulado || 0), 0);
-      const ritmo = avgAhorro3 > 0 ? avgAhorro3 : (curM.ahorro || 1);
-      const mesesEstimados = ritmo > 0 ? Math.ceil(restante / ritmo) : null;
+      const ritmo = avgAhorro3 > 0 ? avgAhorro3 : (curM.ahorro || 0);
+
+      // Meses estimados al ritmo actual
+      const mesesEstimados = ritmo > 0 && restante > 0 ? Math.ceil(restante / ritmo) : null;
       const pct = meta.monto > 0 ? Math.min(((meta.ahorroAcumulado || 0) / meta.monto) * 100, 100) : 0;
-      return { ...meta, restante, mesesEstimados, pct };
+
+      // Cuota sugerida: si tiene fecha meta, calcular cuánto necesita por período
+      let cuotaSugerida = null;
+      let mesesHastaFecha = null;
+      if (meta.fecha && restante > 0) {
+        const hoy = new Date();
+        const fechaMeta = new Date(meta.fecha);
+        const diffMs = fechaMeta - hoy;
+        mesesHastaFecha = Math.max(Math.ceil(diffMs / (1000 * 60 * 60 * 24 * 30)), 1);
+        cuotaSugerida = Math.ceil(restante / mesesHastaFecha);
+      }
+
+      // Análisis de viabilidad financiera
+      const cuotaAnalisis = cuotaSugerida || (ritmo > 0 ? ritmo : 0);
+      let viabilidad = "viable";
+      let mensajeAsesor = "";
+      let cuotaRecomendada = null;
+      let mesesConCapacidad = null;
+
+      if (capacidadAhorro <= 0) {
+        viabilidad = "critica";
+        mensajeAsesor = `⚠️ Tu margen libre actual es $${fmt(Math.max(curM.libre, 0))}. Antes de comprometerte con esta meta, te recomiendo reducir gastos variables para liberar capacidad de ahorro.`;
+      } else if (cuotaAnalisis > capacidadAhorro * 0.8) {
+        viabilidad = "ajustada";
+        // Sugerir cuota que no supere el 50% de la capacidad (deja margen para imprevistos)
+        cuotaRecomendada = Math.floor(capacidadAhorro * 0.5);
+        mesesConCapacidad = cuotaRecomendada > 0 ? Math.ceil(restante / cuotaRecomendada) : null;
+        mensajeAsesor = `💡 La cuota necesaria ($${fmt(cuotaAnalisis)}) supera el 80% de tu capacidad de ahorro ($${fmt(capacidadAhorro)}). Te sugiero aportar $${fmt(cuotaRecomendada)} por período — así llegarías a la meta en ~${mesesConCapacidad} períodos sin comprometer tus gastos esenciales.`;
+      } else {
+        viabilidad = "viable";
+        cuotaRecomendada = Math.max(cuotaAnalisis, Math.floor(capacidadAhorro * 0.3));
+        mesesConCapacidad = cuotaRecomendada > 0 ? Math.ceil(restante / cuotaRecomendada) : null;
+        mensajeAsesor = `✅ Puedes asumir esta meta cómodamente. Con tu capacidad de ahorro actual ($${fmt(capacidadAhorro)}/período), podrías aportar hasta $${fmt(cuotaRecomendada)} y alcanzar la meta en ~${mesesConCapacidad} períodos.`;
+      }
+
+      return {
+        ...meta, restante, mesesEstimados, pct,
+        cuotaSugerida, mesesHastaFecha,
+        capacidadAhorro, viabilidad, mensajeAsesor, cuotaRecomendada, mesesConCapacidad,
+      };
     });
+
+    // Análisis global de deudas vs capacidad
+    const deudaVsCapacidad = capacidadAhorro > 0
+      ? (totalDeudas / (capacidadAhorro * 12)) // años para pagar todas las deudas al ritmo actual
+      : null;
 
     const librePct = curM.ingresos > 0 ? (curM.libre / curM.ingresos) * 100 : 0;
     const recs = [];
@@ -341,6 +396,7 @@ function useAnalytics(data) {
       avgAhorro3, impulsivoTotal, impulsivoPct, smallTotal, smallCount: small.length,
       totalAcumulado, cuotasPendientes, limiteStatus, tasaAhorro, pctGastoSobreIngreso,
       libre: curM.libre, librePct, metasConProyeccion, recs, semaforo,
+      capacidadAhorro, totalDeudas, deudaVsCapacidad,
     };
   }, [data]);
 }
@@ -966,11 +1022,31 @@ function Analysis({ analytics }) {
 /* ----------------------------------------------------------------------
    GOALS & LIMITS
 ------------------------------------------------------------------------- */
+function ViabilidadBadge({ viabilidad }) {
+  const map = {
+    viable: { color: "var(--emerald)", bg: "var(--emerald-soft)", label: "✅ Viable" },
+    ajustada: { color: "var(--amber)", bg: "var(--amber-soft)", label: "⚠️ Ajustada" },
+    critica: { color: "var(--red)", bg: "var(--red-soft)", label: "🚨 Capacidad limitada" },
+  };
+  const v = map[viabilidad] || map.viable;
+  return (
+    <span className="text-[10px] font-utility font-semibold px-2 py-0.5 rounded-full" style={{ background: v.bg, color: v.color }}>
+      {v.label}
+    </span>
+  );
+}
+
 function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta, onUpdateLimit }) {
   const [showAddMeta, setShowAddMeta] = useState(false);
   const [nombre, setNombre] = useState("");
   const [monto, setMonto] = useState("");
   const [fechaMeta, setFechaMeta] = useState("");
+  const [abonoValues, setAbonoValues] = useState({});
+  const [expandedMeta, setExpandedMeta] = useState(null);
+
+  const capacidadAhorro = analytics?.capacidadAhorro || 0;
+  const totalDeudas = analytics?.totalDeudas || 0;
+  const deudaVsCapacidad = analytics?.deudaVsCapacidad;
 
   const handleAddMeta = () => {
     const m = parseFloat(monto);
@@ -980,47 +1056,152 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
     setShowAddMeta(false);
   };
 
+  const handleAbono = (metaId, acumuladoActual) => {
+    const val = parseFloat(abonoValues[metaId]);
+    if (!val || val <= 0) return;
+    onUpdateMeta(metaId, acumuladoActual + val);
+    setAbonoValues((prev) => ({ ...prev, [metaId]: "" }));
+  };
+
   return (
     <div className="px-5 pt-6 pb-4 space-y-6">
-      <h1 className="font-display text-[26px]" style={{ color: "var(--ink)" }}>Metas y límites</h1>
+      <h1 className="font-display text-[26px]" style={{ color: "var(--ink)" }}>Metas y límites 🌸</h1>
+
+      {/* Resumen de capacidad financiera */}
+      <div className="rounded-[20px] p-4" style={{ background: "var(--lilac-soft)", border: "1px solid var(--lilac)" }}>
+        <p className="text-xs font-utility font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--lilac)" }}>
+          🧠 Tu capacidad de ahorro estimada
+        </p>
+        <p className="font-mono text-2xl font-semibold mb-1" style={{ color: "var(--ink)" }}>${fmt(capacidadAhorro)}<span className="text-sm font-utility opacity-50"> /período</span></p>
+        <p className="text-xs font-utility opacity-60" style={{ color: "var(--ink)" }}>
+          Basado en tu margen libre promedio de los últimos períodos.
+        </p>
+        {totalDeudas > 0 && (
+          <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--lilac)" }}>
+            <p className="text-xs font-utility opacity-70" style={{ color: "var(--ink)" }}>
+              📋 Deudas activas: <span className="font-semibold" style={{ color: "var(--red)" }}>${fmt(totalDeudas)}</span>
+              {deudaVsCapacidad != null && ` · ~${deudaVsCapacidad.toFixed(1)} años para liquidarlas al ritmo actual`}
+            </p>
+          </div>
+        )}
+      </div>
 
       <section>
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-display text-[16px]" style={{ color: "var(--ink)" }}>Metas de ahorro</h3>
-          <button onClick={() => setShowAddMeta(true)} className="flex items-center gap-1 text-xs font-utility font-medium" style={{ color: "var(--emerald)" }}>
+          <button onClick={() => setShowAddMeta(true)} className="flex items-center gap-1 text-xs font-utility font-medium px-3 py-1.5 rounded-full" style={{ background: "var(--emerald-soft)", color: "var(--emerald)" }}>
             <Plus size={14} /> Nueva
           </button>
         </div>
-        <div className="space-y-3">
+        <div className="space-y-4">
           {(analytics?.metasConProyeccion || []).map((m) => (
-            <div key={m.id} className="rounded-[18px] p-4" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-utility font-medium text-sm" style={{ color: "var(--ink)" }}>{m.nombre}</span>
-                <button onClick={() => onDeleteMeta(m.id)} className="opacity-40"><Trash2 size={14} style={{ color: "var(--ink)" }} /></button>
+            <div key={m.id} className="rounded-[20px] p-4" style={{ background: "var(--card)", border: `1px solid ${m.viabilidad === "critica" ? "var(--red)" : m.viabilidad === "ajustada" ? "var(--amber)" : "var(--line)"}` }}>
+
+              {/* Header */}
+              <div className="flex items-start justify-between mb-2">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-utility font-semibold text-sm" style={{ color: "var(--ink)" }}>{m.nombre}</span>
+                    <ViabilidadBadge viabilidad={m.viabilidad} />
+                  </div>
+                  {m.fecha && (
+                    <p className="text-[11px] font-utility opacity-50 mt-0.5" style={{ color: "var(--ink)" }}>
+                      Meta: {new Date(m.fecha).toLocaleDateString("es-CO", { month: "long", year: "numeric" })}
+                      {m.mesesHastaFecha != null && ` · ${m.mesesHastaFecha} períodos restantes`}
+                    </p>
+                  )}
+                </div>
+                <button onClick={() => onDeleteMeta(m.id)} className="opacity-30 ml-2 flex-shrink-0">
+                  <Trash2 size={14} style={{ color: "var(--ink)" }} />
+                </button>
               </div>
-              <div className="h-2 rounded-full overflow-hidden mb-2 mt-2" style={{ background: "var(--line)" }}>
-                <div className="h-full rounded-full" style={{ width: `${m.pct}%`, background: "var(--emerald)" }} />
+
+              {/* Barra de progreso */}
+              <div className="h-2.5 rounded-full overflow-hidden mb-2" style={{ background: "var(--line)" }}>
+                <div className="h-full rounded-full transition-all" style={{ width: `${m.pct}%`, background: m.pct >= 100 ? "var(--emerald)" : "var(--lilac)" }} />
               </div>
-              <div className="flex items-center justify-between text-xs font-utility opacity-70 mb-3" style={{ color: "var(--ink)" }}>
-                <span>${fmt(m.ahorroAcumulado || 0)} de ${fmt(m.monto)}</span>
-                {m.mesesEstimados != null && <span>~{m.mesesEstimados} meses</span>}
+
+              {/* Progreso numérico */}
+              <div className="flex justify-between text-xs font-utility mb-3" style={{ color: "var(--ink)" }}>
+                <span className="opacity-60">${fmt(m.ahorroAcumulado || 0)} ahorrados</span>
+                <span className="font-semibold opacity-80">{Math.round(m.pct)}% de ${fmt(m.monto)}</span>
               </div>
-              <div className="flex gap-2">
-                <TextInput
-                  type="number" placeholder="Añadir abono"
-                  className="flex-1 !py-2 !text-sm"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      const val = parseFloat(e.target.value);
-                      if (val > 0) { onUpdateMeta(m.id, (m.ahorroAcumulado || 0) + val); e.target.value = ""; }
-                    }
-                  }}
-                />
-              </div>
+
+              {/* Cuota sugerida */}
+              {m.cuotaSugerida != null && m.restante > 0 && (
+                <div className="rounded-[12px] px-3 py-2 mb-3" style={{ background: "var(--emerald-soft)" }}>
+                  <p className="text-[11px] font-utility" style={{ color: "var(--ink)" }}>
+                    💰 Para llegar a tu fecha meta, necesitarías abonar aprox.
+                    <span className="font-semibold" style={{ color: "var(--emerald)" }}> ${fmt(m.cuotaSugerida)}</span> por período.
+                  </p>
+                </div>
+              )}
+
+              {/* Mensaje del asesor */}
+              {m.mensajeAsesor && m.restante > 0 && (
+                <button
+                  onClick={() => setExpandedMeta(expandedMeta === m.id ? null : m.id)}
+                  className="w-full text-left rounded-[12px] px-3 py-2 mb-3"
+                  style={{ background: m.viabilidad === "critica" ? "var(--red-soft)" : m.viabilidad === "ajustada" ? "var(--amber-soft)" : "var(--lilac-soft)" }}
+                >
+                  <p className="text-[11px] font-utility font-semibold mb-0.5" style={{ color: m.viabilidad === "critica" ? "var(--red)" : m.viabilidad === "ajustada" ? "var(--amber)" : "var(--lilac)" }}>
+                    🧠 Consejo de tu asesora financiera {expandedMeta === m.id ? "▲" : "▼"}
+                  </p>
+                  {expandedMeta === m.id && (
+                    <p className="text-[12px] font-utility leading-relaxed mt-1" style={{ color: "var(--ink)" }}>
+                      {m.mensajeAsesor}
+                    </p>
+                  )}
+                </button>
+              )}
+
+              {/* Stats rápidos */}
+              {m.restante > 0 && (
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <div className="rounded-[10px] p-2.5 text-center" style={{ background: "var(--card-alt)" }}>
+                    <p className="text-[10px] font-utility opacity-50 mb-0.5" style={{ color: "var(--ink)" }}>Falta</p>
+                    <p className="font-mono text-sm font-semibold" style={{ color: "var(--ink)" }}>${fmt(m.restante)}</p>
+                  </div>
+                  <div className="rounded-[10px] p-2.5 text-center" style={{ background: "var(--card-alt)" }}>
+                    <p className="text-[10px] font-utility opacity-50 mb-0.5" style={{ color: "var(--ink)" }}>
+                      {m.cuotaRecomendada ? "Cuota ideal" : "Al ritmo actual"}
+                    </p>
+                    <p className="font-mono text-sm font-semibold" style={{ color: "var(--ink)" }}>
+                      {m.cuotaRecomendada ? `$${fmt(m.cuotaRecomendada)}` : (m.mesesEstimados ? `~${m.mesesEstimados} per.` : "—")}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {m.pct >= 100 ? (
+                <div className="text-center py-1">
+                  <span className="text-sm font-utility font-semibold" style={{ color: "var(--emerald)" }}>🎉 ¡Meta cumplida!</span>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <TextInput
+                    type="number"
+                    placeholder="Añadir abono"
+                    value={abonoValues[m.id] || ""}
+                    onChange={(e) => setAbonoValues((prev) => ({ ...prev, [m.id]: e.target.value }))}
+                    style={{ fontSize: "14px", padding: "8px 12px" }}
+                  />
+                  <button
+                    onClick={() => handleAbono(m.id, m.ahorroAcumulado || 0)}
+                    className="px-4 py-2 rounded-xl text-sm font-utility font-semibold flex-shrink-0"
+                    style={{ background: "var(--emerald)", color: "#fff" }}
+                  >
+                    Abonar
+                  </button>
+                </div>
+              )}
             </div>
           ))}
           {(!analytics?.metasConProyeccion || analytics.metasConProyeccion.length === 0) && (
-            <p className="text-sm font-utility opacity-50" style={{ color: "var(--ink)" }}>Aún no tienes metas. Crea la primera.</p>
+            <div className="text-center py-8">
+              <p className="text-3xl mb-2">🌱</p>
+              <p className="text-sm font-utility opacity-50" style={{ color: "var(--ink)" }}>Aún no tienes metas. ¡Crea la primera!</p>
+            </div>
           )}
         </div>
       </section>
@@ -1041,16 +1222,25 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
         </div>
       </section>
 
-      <Sheet open={showAddMeta} onClose={() => setShowAddMeta(false)} title="Nueva meta de ahorro">
-        <Field label="Nombre">
+      <Sheet open={showAddMeta} onClose={() => setShowAddMeta(false)} title="Nueva meta 🌸">
+        <Field label="Nombre de la meta">
           <TextInput value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Cuota inicial vivienda" />
         </Field>
         <Field label="Monto objetivo">
           <TextInput type="number" value={monto} onChange={(e) => setMonto(e.target.value)} placeholder="0" />
         </Field>
-        <Field label="Fecha meta (opcional)">
+        <Field label="Fecha límite (opcional — te ayuda a calcular la cuota exacta)">
           <TextInput type="date" value={fechaMeta} onChange={(e) => setFechaMeta(e.target.value)} />
         </Field>
+        {/* Preview de viabilidad al crear */}
+        {monto && parseFloat(monto) > 0 && capacidadAhorro > 0 && (
+          <div className="rounded-[12px] p-3 mb-3" style={{ background: "var(--lilac-soft)" }}>
+            <p className="text-[12px] font-utility" style={{ color: "var(--ink)" }}>
+              Con tu capacidad actual de <span className="font-semibold">${fmt(capacidadAhorro)}/período</span>, podrías
+              alcanzar esta meta en <span className="font-semibold">~{Math.ceil(parseFloat(monto) / capacidadAhorro)} períodos</span> aportando todo tu margen libre.
+            </p>
+          </div>
+        )}
         <button onClick={handleAddMeta} className="w-full mt-2 rounded-xl py-3.5 font-utility font-semibold text-[15px]" style={{ background: "var(--lilac)", color: "#FFFFFF" }}>
           Crear meta
         </button>
@@ -1241,6 +1431,8 @@ function SettingsView({ data, onToggleDark, onExport, error }) {
       <div className="rounded-[18px] p-4" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
         <p className="text-xs font-utility opacity-60 leading-relaxed" style={{ color: "var(--ink)" }}>
           💌 Tus datos se guardan solitos, sin que hagas nada. Todo queda aquí en tu dispositivo, nadie más los ve.
+        </p>
+        <p className="text-[10px] font-utility opacity-30 mt-2 text-right" style={{ color: "var(--ink)" }}>v1.1.0
         </p>
       </div>
     </div>
