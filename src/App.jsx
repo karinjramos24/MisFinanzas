@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, Component } from "react";
 import {
   Home, PlusCircle, BarChart3, Target, Settings, X, TrendingUp, TrendingDown,
   AlertTriangle, CheckCircle2, Sparkles, ChevronRight, Heart, PiggyBank,
@@ -1064,6 +1064,64 @@ function Analysis({ analytics }) {
 }
 
 /* ----------------------------------------------------------------------
+   ERROR BOUNDARY — captura errores de render en Metas y muestra fallback
+------------------------------------------------------------------------- */
+class MetasErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="px-5 pt-10 pb-4 text-center space-y-4">
+          <p className="text-3xl">🛠️</p>
+          <p className="font-display text-lg" style={{ color: "var(--ink)" }}>Algo salió mal en Metas</p>
+          <p className="text-xs font-utility opacity-60 leading-relaxed" style={{ color: "var(--ink)" }}>
+            {this.state.error?.message || "Error desconocido"}
+          </p>
+          <button
+            onClick={() => {
+              // Reparar: limpiar metas del storage y recargar
+              try {
+                const raw = localStorage.getItem("finanzas-data-v1");
+                if (raw) {
+                  const d = JSON.parse(raw);
+                  d.metas = (d.metas || []).map((m) => ({
+                    ...m,
+                    abonos: Array.isArray(m.abonos)
+                      ? m.abonos.map((a, i) => ({ id: a.id || `ab-${i}`, fecha: a.fecha || new Date().toISOString().slice(0,10), valor: Number(a.valor) || 0 }))
+                      : (m.ahorroAcumulado > 0 ? [{ id: "ab-0", fecha: new Date().toISOString().slice(0,10), valor: Number(m.ahorroAcumulado) || 0 }] : []),
+                  }));
+                  delete d.metas.ahorroAcumulado;
+                  localStorage.setItem("finanzas-data-v1", JSON.stringify(d));
+                }
+              } catch(e) {}
+              window.location.reload();
+            }}
+            className="w-full rounded-xl py-3 font-utility font-semibold text-sm"
+            style={{ background: "var(--lilac)", color: "#fff" }}
+          >
+            🔧 Reparar y recargar
+          </button>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            className="w-full rounded-xl py-3 font-utility text-sm opacity-60"
+            style={{ border: "1px solid var(--line)", color: "var(--ink)" }}
+          >
+            Reintentar
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/* ----------------------------------------------------------------------
    GOALS & LIMITS
 ------------------------------------------------------------------------- */
 function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAbono, onEliminarAbono, onDeleteMeta, onUpdateLimit }) {
@@ -1690,14 +1748,16 @@ export default function App() {
           {tab === "historial" && <History data={data} onDelete={handleDelete} onEdit={handleEdit} />}
           {tab === "analisis" && <Analysis analytics={analytics} />}
           {tab === "metas" && (
-            <GoalsAndLimits
-              data={data} analytics={analytics}
-              onAddMeta={handleAddMeta}
-              onAgregarAbono={handleAgregarAbonoMeta}
-              onEditarAbono={handleEditarAbonoMeta}
-              onEliminarAbono={handleEliminarAbonoMeta}
-              onDeleteMeta={handleDeleteMeta} onUpdateLimit={handleUpdateLimit}
-            />
+            <MetasErrorBoundary>
+              <GoalsAndLimits
+                data={data} analytics={analytics}
+                onAddMeta={handleAddMeta}
+                onAgregarAbono={handleAgregarAbonoMeta}
+                onEditarAbono={handleEditarAbonoMeta}
+                onEliminarAbono={handleEliminarAbonoMeta}
+                onDeleteMeta={handleDeleteMeta} onUpdateLimit={handleUpdateLimit}
+              />
+            </MetasErrorBoundary>
           )}
           {tab === "deudas" && (
             <DeudasView
