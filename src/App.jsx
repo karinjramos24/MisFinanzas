@@ -182,14 +182,21 @@ function useStorage() {
         // migración: convertir metas con ahorroAcumulado simple a lista de abonos
         if (parsed.metas) {
           parsed.metas = parsed.metas.map((meta) => {
-            if (!meta.abonos) {
-              // si tenía ahorroAcumulado como número, crear un abono histórico con ese valor
-              const abonos = (meta.ahorroAcumulado && meta.ahorroAcumulado > 0)
-                ? [{ id: uid(), fecha: meta.fecha || todayISO(), valor: meta.ahorroAcumulado, notas: "Abono inicial" }]
-                : [];
-              return { ...meta, abonos };
+            try {
+              if (!Array.isArray(meta.abonos)) {
+                const valorInicial = typeof meta.ahorroAcumulado === "number" && meta.ahorroAcumulado > 0
+                  ? meta.ahorroAcumulado : 0;
+                const abonos = valorInicial > 0
+                  ? [{ id: uid(), fecha: meta.fecha || todayISO(), valor: valorInicial, notas: "Abono inicial" }]
+                  : [];
+                const { ahorroAcumulado: _, ...metaSinCampoViejo } = meta;
+                return { ...metaSinCampoViejo, abonos };
+              }
+              // ya tiene abonos como array, asegurar que cada abono tenga id
+              return { ...meta, abonos: meta.abonos.map((a) => ({ id: a.id || uid(), ...a })) };
+            } catch (_) {
+              return { ...meta, abonos: meta.abonos || [] };
             }
-            return meta;
           });
         }
         setData(parsed);
@@ -315,9 +322,10 @@ function useAnalytics(data) {
     const totalDeudas = (data.deudas || []).reduce((s, d) => s + d.saldoPendiente, 0);
 
     const metasConProyeccion = (metas || []).map((meta) => {
+      try {
       // Calcular ahorroAcumulado desde la lista de abonos
-      const abonos = meta.abonos || [];
-      const ahorroAcumulado = abonos.reduce((s, a) => s + (a.valor || 0), 0);
+      const abonos = Array.isArray(meta.abonos) ? meta.abonos : [];
+      const ahorroAcumulado = abonos.reduce((s, a) => s + (Number(a.valor) || 0), 0);
       const restante = Math.max(meta.monto - ahorroAcumulado, 0);
       const ritmo = avgAhorro3 > 0 ? avgAhorro3 : (curM.ahorro || 0);
       const mesesEstimados = ritmo > 0 && restante > 0 ? Math.ceil(restante / ritmo) : null;
@@ -375,6 +383,14 @@ function useAnalytics(data) {
         cuotaSugerida, mesesHastaFecha, deficitAcumulado, cuotaAjustada,
         capacidadAhorro, viabilidad, mensajeAsesor, cuotaRecomendada, mesesConCapacidad,
       };
+      } catch (_) {
+        // si una meta individual está corrupta, devolverla con valores seguros
+        return { ...meta, abonos: [], ahorroAcumulado: 0, restante: meta.monto || 0, pct: 0,
+          mesesEstimados: null, cuotaSugerida: null, mesesHastaFecha: null,
+          deficitAcumulado: 0, cuotaAjustada: null, capacidadAhorro: 0,
+          viabilidad: "viable", mensajeAsesor: "", cuotaRecomendada: null, mesesConCapacidad: null,
+        };
+      }
     });
 
     // Análisis global de deudas vs capacidad
@@ -1127,7 +1143,7 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
                   </div>
                   {m.fecha && (
                     <p className="text-[11px] font-utility opacity-50 mt-0.5" style={{ color: "var(--ink)" }}>
-                      Meta: {new Date(m.fecha).toLocaleDateString("es-CO", { month: "long", year: "numeric" })}
+                      Meta: {(() => { try { return new Date(m.fecha).toLocaleDateString("es-CO", { month: "long", year: "numeric" }); } catch(_) { return m.fecha; } })()}
                       {m.mesesHastaFecha != null && ` · ${m.mesesHastaFecha} períodos restantes`}
                     </p>
                   )}
@@ -1554,10 +1570,6 @@ export default function App() {
       else if (type === "ingreso") d.ingresos.push(item);
       else if (type === "ahorro") {
         d.ahorros.push(item);
-        if (item.meta) {
-          const meta = d.metas.find((m) => m.id === item.meta);
-          if (meta) meta.ahorroAcumulado = (meta.ahorroAcumulado || 0) + item.valor;
-        }
       }
       return d;
     });
