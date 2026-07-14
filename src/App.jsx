@@ -1064,6 +1064,23 @@ function Analysis({ analytics }) {
 }
 
 /* ----------------------------------------------------------------------
+   VIABILIDAD BADGE
+------------------------------------------------------------------------- */
+function ViabilidadBadge({ viabilidad }) {
+  const map = {
+    viable: { color: "var(--emerald)", bg: "var(--emerald-soft)", label: "✅ Viable" },
+    ajustada: { color: "var(--amber)", bg: "var(--amber-soft)", label: "⚠️ Ajustada" },
+    critica: { color: "var(--red)", bg: "var(--red-soft)", label: "🚨 Capacidad limitada" },
+  };
+  const v = map[viabilidad] || map.viable;
+  return (
+    <span className="text-[10px] font-utility font-semibold px-2 py-0.5 rounded-full" style={{ background: v.bg, color: v.color }}>
+      {v.label}
+    </span>
+  );
+}
+
+/* ----------------------------------------------------------------------
    ERROR BOUNDARY — captura errores de render en Metas y muestra fallback
 ------------------------------------------------------------------------- */
 class MetasErrorBoundary extends Component {
