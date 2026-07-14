@@ -147,7 +147,8 @@ const seedData = () => {
       { id: uid(), fecha: day(y, m, 23), valor: 400000, meta: null, observaciones: "Ahorro mensual fijo" },
     ],
     metas: [
-      { id: uid(), nombre: "Cuota inicial vivienda", monto: 20000000, fecha: "2027-12-31", ahorroAcumulado: 400000 },
+      { id: uid(), nombre: "Cuota inicial vivienda", monto: 20000000, fecha: "2027-12-31",
+        abonos: [{ id: uid(), fecha: todayISO(), valor: 400000, notas: "Ahorro inicial" }] },
     ],
     deudas: [
       { id: uid(), nombre: "Préstamo banco", montoTotal: 5000000, saldoPendiente: 4000000, abonos: [], fecha: todayISO(), notas: "" },
@@ -176,8 +177,21 @@ function useStorage() {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        // migración: añadir deudas si no existe en datos antiguos
+        // migración: añadir deudas si no existe
         if (!parsed.deudas) parsed.deudas = [];
+        // migración: convertir metas con ahorroAcumulado simple a lista de abonos
+        if (parsed.metas) {
+          parsed.metas = parsed.metas.map((meta) => {
+            if (!meta.abonos) {
+              // si tenía ahorroAcumulado como número, crear un abono histórico con ese valor
+              const abonos = (meta.ahorroAcumulado && meta.ahorroAcumulado > 0)
+                ? [{ id: uid(), fecha: meta.fecha || todayISO(), valor: meta.ahorroAcumulado, notas: "Abono inicial" }]
+                : [];
+              return { ...meta, abonos };
+            }
+            return meta;
+          });
+        }
         setData(parsed);
       } else {
         const seed = seedData();
@@ -291,24 +305,25 @@ function useAnalytics(data) {
     const tasaAhorro = curM.ingresos > 0 ? (curM.ahorro / curM.ingresos) * 100 : 0;
     const pctGastoSobreIngreso = curM.ingresos > 0 ? (curM.gastos / curM.ingresos) * 100 : 0;
 
-    // Capacidad de ahorro real: promedio de libre de los últimos períodos
-    // Si no hay histórico, usamos el libre actual
+    // Capacidad de ahorro = promedio de lo que REALMENTE ahorraste en los últimos períodos
+    // Es la medida más honesta: lo que separaste, no lo que "sobró" en teoría
     const capacidadAhorro = last3.length > 0
-      ? last3.reduce((s, m) => s + Math.max(m.libre, 0), 0) / last3.length
-      : Math.max(curM.libre, 0);
+      ? last3.reduce((s, m) => s + Math.max(m.ahorro, 0), 0) / last3.length
+      : Math.max(curM.ahorro, 0);
 
     // Total comprometido en metas y deudas activas (para análisis de capacidad)
     const totalDeudas = (data.deudas || []).reduce((s, d) => s + d.saldoPendiente, 0);
 
     const metasConProyeccion = (metas || []).map((meta) => {
-      const restante = Math.max(meta.monto - (meta.ahorroAcumulado || 0), 0);
+      // Calcular ahorroAcumulado desde la lista de abonos
+      const abonos = meta.abonos || [];
+      const ahorroAcumulado = abonos.reduce((s, a) => s + (a.valor || 0), 0);
+      const restante = Math.max(meta.monto - ahorroAcumulado, 0);
       const ritmo = avgAhorro3 > 0 ? avgAhorro3 : (curM.ahorro || 0);
-
-      // Meses estimados al ritmo actual
       const mesesEstimados = ritmo > 0 && restante > 0 ? Math.ceil(restante / ritmo) : null;
-      const pct = meta.monto > 0 ? Math.min(((meta.ahorroAcumulado || 0) / meta.monto) * 100, 100) : 0;
+      const pct = meta.monto > 0 ? Math.min((ahorroAcumulado / meta.monto) * 100, 100) : 0;
 
-      // Cuota sugerida: si tiene fecha meta, calcular cuánto necesita por período
+      // Cuota sugerida según fecha meta
       let cuotaSugerida = null;
       let mesesHastaFecha = null;
       if (meta.fecha && restante > 0) {
@@ -319,7 +334,21 @@ function useAnalytics(data) {
         cuotaSugerida = Math.ceil(restante / mesesHastaFecha);
       }
 
-      // Análisis de viabilidad financiera
+      // Calcular déficit: cuánto menos se abonó en el último período vs la cuota sugerida
+      const cuotaBase = cuotaSugerida || capacidadAhorro;
+      let deficitAcumulado = 0;
+      let cuotaAjustada = null;
+      if (abonos.length > 0 && cuotaBase > 0) {
+        // Último abono registrado
+        const ultimoAbono = abonos[abonos.length - 1];
+        const diferencia = cuotaBase - (ultimoAbono.valor || 0);
+        if (diferencia > 0) {
+          deficitAcumulado = diferencia;
+          cuotaAjustada = Math.ceil(cuotaBase + diferencia); // cuota normal + recuperar lo que faltó
+        }
+      }
+
+      // Análisis de viabilidad
       const cuotaAnalisis = cuotaSugerida || (ritmo > 0 ? ritmo : 0);
       let viabilidad = "viable";
       let mensajeAsesor = "";
@@ -328,10 +357,9 @@ function useAnalytics(data) {
 
       if (capacidadAhorro <= 0) {
         viabilidad = "critica";
-        mensajeAsesor = `⚠️ Tu margen libre actual es $${fmt(Math.max(curM.libre, 0))}. Antes de comprometerte con esta meta, te recomiendo reducir gastos variables para liberar capacidad de ahorro.`;
+        mensajeAsesor = `⚠️ No tienes ahorro registrado en períodos anteriores. Empieza con cualquier monto, aunque sea pequeño, y la app irá ajustando las sugerencias.`;
       } else if (cuotaAnalisis > capacidadAhorro * 0.8) {
         viabilidad = "ajustada";
-        // Sugerir cuota que no supere el 50% de la capacidad (deja margen para imprevistos)
         cuotaRecomendada = Math.floor(capacidadAhorro * 0.5);
         mesesConCapacidad = cuotaRecomendada > 0 ? Math.ceil(restante / cuotaRecomendada) : null;
         mensajeAsesor = `💡 La cuota necesaria ($${fmt(cuotaAnalisis)}) supera el 80% de tu capacidad de ahorro ($${fmt(capacidadAhorro)}). Te sugiero aportar $${fmt(cuotaRecomendada)} por período — así llegarías a la meta en ~${mesesConCapacidad} períodos sin comprometer tus gastos esenciales.`;
@@ -339,12 +367,12 @@ function useAnalytics(data) {
         viabilidad = "viable";
         cuotaRecomendada = Math.max(cuotaAnalisis, Math.floor(capacidadAhorro * 0.3));
         mesesConCapacidad = cuotaRecomendada > 0 ? Math.ceil(restante / cuotaRecomendada) : null;
-        mensajeAsesor = `✅ Puedes asumir esta meta cómodamente. Con tu capacidad de ahorro actual ($${fmt(capacidadAhorro)}/período), podrías aportar hasta $${fmt(cuotaRecomendada)} y alcanzar la meta en ~${mesesConCapacidad} períodos.`;
+        mensajeAsesor = `✅ Puedes asumir esta meta cómodamente. Con tu capacidad de ahorro ($${fmt(capacidadAhorro)}/período), podrías aportar $${fmt(cuotaRecomendada)} y alcanzar la meta en ~${mesesConCapacidad} períodos.`;
       }
 
       return {
-        ...meta, restante, mesesEstimados, pct,
-        cuotaSugerida, mesesHastaFecha,
+        ...meta, abonos, ahorroAcumulado, restante, mesesEstimados, pct,
+        cuotaSugerida, mesesHastaFecha, deficitAcumulado, cuotaAjustada,
         capacidadAhorro, viabilidad, mensajeAsesor, cuotaRecomendada, mesesConCapacidad,
       };
     });
@@ -1022,27 +1050,15 @@ function Analysis({ analytics }) {
 /* ----------------------------------------------------------------------
    GOALS & LIMITS
 ------------------------------------------------------------------------- */
-function ViabilidadBadge({ viabilidad }) {
-  const map = {
-    viable: { color: "var(--emerald)", bg: "var(--emerald-soft)", label: "✅ Viable" },
-    ajustada: { color: "var(--amber)", bg: "var(--amber-soft)", label: "⚠️ Ajustada" },
-    critica: { color: "var(--red)", bg: "var(--red-soft)", label: "🚨 Capacidad limitada" },
-  };
-  const v = map[viabilidad] || map.viable;
-  return (
-    <span className="text-[10px] font-utility font-semibold px-2 py-0.5 rounded-full" style={{ background: v.bg, color: v.color }}>
-      {v.label}
-    </span>
-  );
-}
-
-function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta, onUpdateLimit }) {
+function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAbono, onEliminarAbono, onDeleteMeta, onUpdateLimit }) {
   const [showAddMeta, setShowAddMeta] = useState(false);
   const [nombre, setNombre] = useState("");
   const [monto, setMonto] = useState("");
   const [fechaMeta, setFechaMeta] = useState("");
   const [abonoValues, setAbonoValues] = useState({});
   const [expandedMeta, setExpandedMeta] = useState(null);
+  const [expandedAbonos, setExpandedAbonos] = useState({});
+  const [editAbono, setEditAbono] = useState(null); // { metaId, abonoId, valor, fecha }
 
   const capacidadAhorro = analytics?.capacidadAhorro || 0;
   const totalDeudas = analytics?.totalDeudas || 0;
@@ -1051,36 +1067,40 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
   const handleAddMeta = () => {
     const m = parseFloat(monto);
     if (!nombre.trim() || !m || m <= 0) return;
-    onAddMeta({ id: uid(), nombre: nombre.trim(), monto: m, fecha: fechaMeta || null, ahorroAcumulado: 0 });
+    onAddMeta({ id: uid(), nombre: nombre.trim(), monto: m, fecha: fechaMeta || null });
     setNombre(""); setMonto(""); setFechaMeta("");
     setShowAddMeta(false);
   };
 
-  const handleAbono = (metaId, acumuladoActual) => {
+  const handleAbono = (metaId) => {
     const val = parseFloat(abonoValues[metaId]);
     if (!val || val <= 0) return;
-    onUpdateMeta(metaId, acumuladoActual + val);
+    onAgregarAbono(metaId, { valor: val });
     setAbonoValues((prev) => ({ ...prev, [metaId]: "" }));
+  };
+
+  const handleGuardarEdicionAbono = () => {
+    if (!editAbono) return;
+    const val = parseFloat(editAbono.valor);
+    if (!val || val <= 0) return;
+    onEditarAbono(editAbono.metaId, editAbono.abonoId, val, editAbono.fecha);
+    setEditAbono(null);
   };
 
   return (
     <div className="px-5 pt-6 pb-4 space-y-6">
       <h1 className="font-display text-[26px]" style={{ color: "var(--ink)" }}>Metas y límites 🌸</h1>
 
-      {/* Resumen de capacidad financiera */}
+      {/* Resumen capacidad */}
       <div className="rounded-[20px] p-4" style={{ background: "var(--lilac-soft)", border: "1px solid var(--lilac)" }}>
-        <p className="text-xs font-utility font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--lilac)" }}>
-          🧠 Tu capacidad de ahorro estimada
-        </p>
+        <p className="text-xs font-utility font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--lilac)" }}>🧠 Tu capacidad de ahorro estimada</p>
         <p className="font-mono text-2xl font-semibold mb-1" style={{ color: "var(--ink)" }}>${fmt(capacidadAhorro)}<span className="text-sm font-utility opacity-50"> /período</span></p>
-        <p className="text-xs font-utility opacity-60" style={{ color: "var(--ink)" }}>
-          Basado en tu margen libre promedio de los últimos períodos.
-        </p>
+        <p className="text-xs font-utility opacity-60" style={{ color: "var(--ink)" }}>Promedio de lo que realmente ahorraste en tus últimos períodos registrados.</p>
         {totalDeudas > 0 && (
           <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--lilac)" }}>
             <p className="text-xs font-utility opacity-70" style={{ color: "var(--ink)" }}>
               📋 Deudas activas: <span className="font-semibold" style={{ color: "var(--red)" }}>${fmt(totalDeudas)}</span>
-              {deudaVsCapacidad != null && ` · ~${deudaVsCapacidad.toFixed(1)} años para liquidarlas al ritmo actual`}
+              {deudaVsCapacidad != null && ` · ~${deudaVsCapacidad.toFixed(1)} años para liquidarlas`}
             </p>
           </div>
         )}
@@ -1093,6 +1113,7 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
             <Plus size={14} /> Nueva
           </button>
         </div>
+
         <div className="space-y-4">
           {(analytics?.metasConProyeccion || []).map((m) => (
             <div key={m.id} className="rounded-[20px] p-4" style={{ background: "var(--card)", border: `1px solid ${m.viabilidad === "critica" ? "var(--red)" : m.viabilidad === "ajustada" ? "var(--amber)" : "var(--line)"}` }}>
@@ -1111,51 +1132,49 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
                     </p>
                   )}
                 </div>
-                <button onClick={() => onDeleteMeta(m.id)} className="opacity-30 ml-2 flex-shrink-0">
-                  <Trash2 size={14} style={{ color: "var(--ink)" }} />
-                </button>
+                <button onClick={() => onDeleteMeta(m.id)} className="opacity-30 ml-2"><Trash2 size={14} style={{ color: "var(--ink)" }} /></button>
               </div>
 
-              {/* Barra de progreso */}
+              {/* Barra */}
               <div className="h-2.5 rounded-full overflow-hidden mb-2" style={{ background: "var(--line)" }}>
-                <div className="h-full rounded-full transition-all" style={{ width: `${m.pct}%`, background: m.pct >= 100 ? "var(--emerald)" : "var(--lilac)" }} />
+                <div className="h-full rounded-full" style={{ width: `${m.pct}%`, background: m.pct >= 100 ? "var(--emerald)" : "var(--lilac)" }} />
               </div>
-
-              {/* Progreso numérico */}
               <div className="flex justify-between text-xs font-utility mb-3" style={{ color: "var(--ink)" }}>
-                <span className="opacity-60">${fmt(m.ahorroAcumulado || 0)} ahorrados</span>
+                <span className="opacity-60">${fmt(m.ahorroAcumulado)} ahorrados</span>
                 <span className="font-semibold opacity-80">{Math.round(m.pct)}% de ${fmt(m.monto)}</span>
               </div>
 
-              {/* Cuota sugerida */}
+              {/* Cuota sugerida normal */}
               {m.cuotaSugerida != null && m.restante > 0 && (
-                <div className="rounded-[12px] px-3 py-2 mb-3" style={{ background: "var(--emerald-soft)" }}>
+                <div className="rounded-[12px] px-3 py-2 mb-2" style={{ background: "var(--emerald-soft)" }}>
                   <p className="text-[11px] font-utility" style={{ color: "var(--ink)" }}>
-                    💰 Para llegar a tu fecha meta, necesitarías abonar aprox.
-                    <span className="font-semibold" style={{ color: "var(--emerald)" }}> ${fmt(m.cuotaSugerida)}</span> por período.
+                    💰 Cuota sugerida para llegar a tiempo:
+                    <span className="font-semibold" style={{ color: "var(--emerald)" }}> ${fmt(m.cuotaSugerida)}/período</span>
                   </p>
                 </div>
               )}
 
-              {/* Mensaje del asesor */}
-              {m.mensajeAsesor && m.restante > 0 && (
-                <button
-                  onClick={() => setExpandedMeta(expandedMeta === m.id ? null : m.id)}
-                  className="w-full text-left rounded-[12px] px-3 py-2 mb-3"
-                  style={{ background: m.viabilidad === "critica" ? "var(--red-soft)" : m.viabilidad === "ajustada" ? "var(--amber-soft)" : "var(--lilac-soft)" }}
-                >
-                  <p className="text-[11px] font-utility font-semibold mb-0.5" style={{ color: m.viabilidad === "critica" ? "var(--red)" : m.viabilidad === "ajustada" ? "var(--amber)" : "var(--lilac)" }}>
-                    🧠 Consejo de tu asesora financiera {expandedMeta === m.id ? "▲" : "▼"}
+              {/* Cuota ajustada por déficit */}
+              {m.deficitAcumulado > 0 && m.restante > 0 && (
+                <div className="rounded-[12px] px-3 py-2 mb-2" style={{ background: "var(--amber-soft)" }}>
+                  <p className="text-[11px] font-utility" style={{ color: "var(--ink)" }}>
+                    ⚠️ El período pasado abonaste menos de lo sugerido (déficit: ${fmt(m.deficitAcumulado)}). Para recuperar el ritmo, el próximo período abona
+                    <span className="font-semibold" style={{ color: "var(--amber)" }}> ${fmt(m.cuotaAjustada)}</span>
                   </p>
-                  {expandedMeta === m.id && (
-                    <p className="text-[12px] font-utility leading-relaxed mt-1" style={{ color: "var(--ink)" }}>
-                      {m.mensajeAsesor}
-                    </p>
-                  )}
+                </div>
+              )}
+
+              {/* Consejo asesor */}
+              {m.mensajeAsesor && m.restante > 0 && (
+                <button onClick={() => setExpandedMeta(expandedMeta === m.id ? null : m.id)} className="w-full text-left rounded-[12px] px-3 py-2 mb-3" style={{ background: m.viabilidad === "critica" ? "var(--red-soft)" : m.viabilidad === "ajustada" ? "var(--amber-soft)" : "var(--lilac-soft)" }}>
+                  <p className="text-[11px] font-utility font-semibold" style={{ color: m.viabilidad === "critica" ? "var(--red)" : m.viabilidad === "ajustada" ? "var(--amber)" : "var(--lilac)" }}>
+                    🧠 Consejo de tu asesora {expandedMeta === m.id ? "▲" : "▼"}
+                  </p>
+                  {expandedMeta === m.id && <p className="text-[12px] font-utility leading-relaxed mt-1" style={{ color: "var(--ink)" }}>{m.mensajeAsesor}</p>}
                 </button>
               )}
 
-              {/* Stats rápidos */}
+              {/* Stats */}
               {m.restante > 0 && (
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <div className="rounded-[10px] p-2.5 text-center" style={{ background: "var(--card-alt)" }}>
@@ -1163,9 +1182,7 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
                     <p className="font-mono text-sm font-semibold" style={{ color: "var(--ink)" }}>${fmt(m.restante)}</p>
                   </div>
                   <div className="rounded-[10px] p-2.5 text-center" style={{ background: "var(--card-alt)" }}>
-                    <p className="text-[10px] font-utility opacity-50 mb-0.5" style={{ color: "var(--ink)" }}>
-                      {m.cuotaRecomendada ? "Cuota ideal" : "Al ritmo actual"}
-                    </p>
+                    <p className="text-[10px] font-utility opacity-50 mb-0.5" style={{ color: "var(--ink)" }}>Cuota ideal</p>
                     <p className="font-mono text-sm font-semibold" style={{ color: "var(--ink)" }}>
                       {m.cuotaRecomendada ? `$${fmt(m.cuotaRecomendada)}` : (m.mesesEstimados ? `~${m.mesesEstimados} per.` : "—")}
                     </p>
@@ -1173,26 +1190,56 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
                 </div>
               )}
 
-              {m.pct >= 100 ? (
-                <div className="text-center py-1">
-                  <span className="text-sm font-utility font-semibold" style={{ color: "var(--emerald)" }}>🎉 ¡Meta cumplida!</span>
-                </div>
-              ) : (
-                <div className="flex gap-2">
-                  <TextInput
-                    type="number"
-                    placeholder="Añadir abono"
-                    value={abonoValues[m.id] || ""}
+              {/* Abono */}
+              {m.pct < 100 && (
+                <div className="flex gap-2 mb-3">
+                  <TextInput type="number" placeholder="Añadir abono" value={abonoValues[m.id] || ""}
                     onChange={(e) => setAbonoValues((prev) => ({ ...prev, [m.id]: e.target.value }))}
-                    style={{ fontSize: "14px", padding: "8px 12px" }}
-                  />
-                  <button
-                    onClick={() => handleAbono(m.id, m.ahorroAcumulado || 0)}
-                    className="px-4 py-2 rounded-xl text-sm font-utility font-semibold flex-shrink-0"
-                    style={{ background: "var(--emerald)", color: "#fff" }}
-                  >
+                    style={{ fontSize: "14px", padding: "8px 12px" }} />
+                  <button onClick={() => handleAbono(m.id)} className="px-4 py-2 rounded-xl text-sm font-utility font-semibold flex-shrink-0" style={{ background: "var(--emerald)", color: "#fff" }}>
                     Abonar
                   </button>
+                </div>
+              )}
+              {m.pct >= 100 && <div className="text-center py-1"><span className="text-sm font-utility font-semibold" style={{ color: "var(--emerald)" }}>🎉 ¡Meta cumplida!</span></div>}
+
+              {/* Historial de abonos con edición */}
+              {m.abonos && m.abonos.length > 0 && (
+                <div>
+                  <button onClick={() => setExpandedAbonos((prev) => ({ ...prev, [m.id]: !prev[m.id] }))} className="text-[11px] font-utility opacity-60 mb-2" style={{ color: "var(--ink)" }}>
+                    {expandedAbonos[m.id] ? "▲ Ocultar" : "▼ Ver"} abonos ({m.abonos.length})
+                  </button>
+                  {expandedAbonos[m.id] && (
+                    <div className="space-y-1.5">
+                      {m.abonos.map((a) => (
+                        <div key={a.id} className="flex items-center justify-between rounded-[10px] px-3 py-2" style={{ background: "var(--card-alt)" }}>
+                          {editAbono?.abonoId === a.id ? (
+                            <div className="flex gap-2 flex-1">
+                              <TextInput type="number" value={editAbono.valor} onChange={(e) => setEditAbono((prev) => ({ ...prev, valor: e.target.value }))} style={{ fontSize: "13px", padding: "4px 8px" }} />
+                              <TextInput type="date" value={editAbono.fecha} onChange={(e) => setEditAbono((prev) => ({ ...prev, fecha: e.target.value }))} style={{ fontSize: "13px", padding: "4px 8px" }} />
+                              <button onClick={handleGuardarEdicionAbono} className="text-xs px-2 py-1 rounded-lg font-semibold" style={{ background: "var(--emerald)", color: "#fff" }}>✓</button>
+                              <button onClick={() => setEditAbono(null)} className="text-xs px-2 py-1 rounded-lg" style={{ background: "var(--line)", color: "var(--ink)" }}>✕</button>
+                            </div>
+                          ) : (
+                            <>
+                              <div>
+                                <span className="text-xs font-utility opacity-60" style={{ color: "var(--ink)" }}>{a.fecha}</span>
+                                <span className="text-xs font-semibold ml-2" style={{ color: "var(--emerald)" }}>${fmt(a.valor)}</span>
+                              </div>
+                              <div className="flex gap-2">
+                                <button onClick={() => setEditAbono({ metaId: m.id, abonoId: a.id, valor: String(a.valor), fecha: a.fecha })} className="opacity-50">
+                                  <Edit3 size={13} style={{ color: "var(--lilac)" }} />
+                                </button>
+                                <button onClick={() => onEliminarAbono(m.id, a.id)} className="opacity-40">
+                                  <Trash2 size={13} style={{ color: "var(--ink)" }} />
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1212,11 +1259,8 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
           {CATS_GASTO.map((cat) => (
             <div key={cat} className="flex items-center justify-between gap-3">
               <span className="text-sm font-utility flex-1" style={{ color: "var(--ink)" }}>{catEmoji(cat)} {cat}</span>
-              <TextInput
-                type="number" defaultValue={data.limites[cat] || ""} placeholder="Sin límite"
-                className="w-28 !py-2 !text-sm text-right"
-                onBlur={(e) => onUpdateLimit(cat, parseFloat(e.target.value) || 0)}
-              />
+              <TextInput type="number" defaultValue={data.limites[cat] || ""} placeholder="Sin límite" className="w-28 !py-2 !text-sm text-right"
+                onBlur={(e) => onUpdateLimit(cat, parseFloat(e.target.value) || 0)} />
             </div>
           ))}
         </div>
@@ -1229,15 +1273,13 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
         <Field label="Monto objetivo">
           <TextInput type="number" value={monto} onChange={(e) => setMonto(e.target.value)} placeholder="0" />
         </Field>
-        <Field label="Fecha límite (opcional — te ayuda a calcular la cuota exacta)">
+        <Field label="Fecha límite (opcional)">
           <TextInput type="date" value={fechaMeta} onChange={(e) => setFechaMeta(e.target.value)} />
         </Field>
-        {/* Preview de viabilidad al crear */}
         {monto && parseFloat(monto) > 0 && capacidadAhorro > 0 && (
           <div className="rounded-[12px] p-3 mb-3" style={{ background: "var(--lilac-soft)" }}>
             <p className="text-[12px] font-utility" style={{ color: "var(--ink)" }}>
-              Con tu capacidad actual de <span className="font-semibold">${fmt(capacidadAhorro)}/período</span>, podrías
-              alcanzar esta meta en <span className="font-semibold">~{Math.ceil(parseFloat(monto) / capacidadAhorro)} períodos</span> aportando todo tu margen libre.
+              Con tu capacidad actual de <span className="font-semibold">${fmt(capacidadAhorro)}/período</span>, podrías alcanzar esta meta en <span className="font-semibold">~{Math.ceil(parseFloat(monto) / capacidadAhorro)} períodos</span>.
             </p>
           </div>
         )}
@@ -1247,9 +1289,7 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
       </Sheet>
     </div>
   );
-}
-
-/* ----------------------------------------------------------------------
+}/* ----------------------------------------------------------------------
    SETTINGS
 ------------------------------------------------------------------------- */
 /* ----------------------------------------------------------------------
@@ -1257,12 +1297,14 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onUpdateMeta, onDeleteMeta
    Registro de deudas con abonos y seguimiento de saldo pendiente.
    Es independiente de los gastos con tarjeta de crédito.
 ------------------------------------------------------------------------- */
-function DeudasView({ data, onAddDeuda, onAbonarDeuda, onDeleteDeuda }) {
+function DeudasView({ data, onAddDeuda, onAbonarDeuda, onEditarAbonoDeuda, onEliminarAbonoDeuda, onDeleteDeuda }) {
   const [showAddDeuda, setShowAddDeuda] = useState(false);
   const [nombre, setNombre] = useState("");
   const [monto, setMonto] = useState("");
   const [notas, setNotas] = useState("");
   const [abonoValues, setAbonoValues] = useState({});
+  const [expandedAbonos, setExpandedAbonos] = useState({});
+  const [editAbono, setEditAbono] = useState(null); // { deudaId, abonoId, valor, fecha }
 
   const handleAddDeuda = () => {
     const m = parseFloat(monto);
@@ -1275,9 +1317,17 @@ function DeudasView({ data, onAddDeuda, onAbonarDeuda, onDeleteDeuda }) {
   const handleAbono = (deudaId, saldoActual) => {
     const val = parseFloat(abonoValues[deudaId]);
     if (!val || val <= 0) return;
-    const abono = Math.min(val, saldoActual); // no abonar más de lo que se debe
+    const abono = Math.min(val, saldoActual);
     onAbonarDeuda(deudaId, abono);
     setAbonoValues((prev) => ({ ...prev, [deudaId]: "" }));
+  };
+
+  const handleGuardarEdicion = () => {
+    if (!editAbono) return;
+    const val = parseFloat(editAbono.valor);
+    if (!val || val <= 0) return;
+    onEditarAbonoDeuda(editAbono.deudaId, editAbono.abonoId, val, editAbono.fecha);
+    setEditAbono(null);
   };
 
   const deudas = data.deudas || [];
@@ -1314,7 +1364,6 @@ function DeudasView({ data, onAddDeuda, onAbonarDeuda, onDeleteDeuda }) {
                 </button>
               </div>
 
-              {/* Barra de progreso */}
               <div className="h-2.5 rounded-full overflow-hidden mb-2" style={{ background: "var(--line)" }}>
                 <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: pct >= 100 ? "var(--emerald)" : "var(--lilac)" }} />
               </div>
@@ -1323,46 +1372,67 @@ function DeudasView({ data, onAddDeuda, onAbonarDeuda, onDeleteDeuda }) {
                 <span className="opacity-60">Pagado: <span className="font-semibold" style={{ color: "var(--emerald)" }}>${fmt(pagado)}</span></span>
                 <span className="opacity-60">Pendiente: <span className="font-semibold" style={{ color: "var(--red)" }}>${fmt(d.saldoPendiente)}</span></span>
               </div>
-
-              <div className="text-xs font-utility opacity-50 mb-3 text-right" style={{ color: "var(--ink)" }}>
+              <div className="text-xs font-utility opacity-40 mb-3 text-right" style={{ color: "var(--ink)" }}>
                 Total: ${fmt(d.montoTotal)} · {Math.round(pct)}% pagado
               </div>
 
-              {d.saldoPendiente > 0 && (
-                <div className="flex gap-2">
-                  <TextInput
-                    type="number"
-                    placeholder="Valor del abono"
+              {d.saldoPendiente > 0 ? (
+                <div className="flex gap-2 mb-3">
+                  <TextInput type="number" placeholder="Valor del abono"
                     value={abonoValues[d.id] || ""}
                     onChange={(e) => setAbonoValues((prev) => ({ ...prev, [d.id]: e.target.value }))}
-                    className="flex-1"
-                    style={{ fontSize: "14px", padding: "8px 12px" }}
-                  />
-                  <button
-                    onClick={() => handleAbono(d.id, d.saldoPendiente)}
-                    className="px-4 py-2 rounded-xl text-sm font-utility font-semibold"
-                    style={{ background: "var(--lilac)", color: "#fff" }}
-                  >
+                    style={{ fontSize: "14px", padding: "8px 12px" }} />
+                  <button onClick={() => handleAbono(d.id, d.saldoPendiente)} className="px-4 py-2 rounded-xl text-sm font-utility font-semibold flex-shrink-0" style={{ background: "var(--lilac)", color: "#fff" }}>
                     Abonar
                   </button>
                 </div>
-              )}
-              {d.saldoPendiente <= 0 && (
-                <div className="text-center py-1">
+              ) : (
+                <div className="text-center py-1 mb-3">
                   <span className="text-xs font-utility font-semibold" style={{ color: "var(--emerald)" }}>✅ ¡Deuda pagada!</span>
                 </div>
               )}
 
-              {/* Historial de abonos */}
+              {/* Historial de abonos con edición */}
               {d.abonos && d.abonos.length > 0 && (
-                <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--line)" }}>
-                  <p className="text-[10px] font-utility uppercase tracking-wide opacity-50 mb-1.5" style={{ color: "var(--ink)" }}>Abonos realizados</p>
-                  {d.abonos.slice(-3).map((a, i) => (
-                    <div key={i} className="flex justify-between text-xs font-utility opacity-60" style={{ color: "var(--ink)" }}>
-                      <span>{a.fecha}</span>
-                      <span className="font-semibold" style={{ color: "var(--emerald)" }}>+${fmt(a.valor)}</span>
+                <div>
+                  <button onClick={() => setExpandedAbonos((prev) => ({ ...prev, [d.id]: !prev[d.id] }))} className="text-[11px] font-utility opacity-60 mb-2" style={{ color: "var(--ink)" }}>
+                    {expandedAbonos[d.id] ? "▲ Ocultar" : "▼ Ver"} abonos ({d.abonos.length})
+                  </button>
+                  {expandedAbonos[d.id] && (
+                    <div className="space-y-1.5">
+                      {d.abonos.map((a) => (
+                        <div key={a.id} className="flex items-center justify-between rounded-[10px] px-3 py-2" style={{ background: "var(--card-alt)" }}>
+                          {editAbono?.abonoId === a.id ? (
+                            <div className="flex gap-2 flex-1">
+                              <TextInput type="number" value={editAbono.valor}
+                                onChange={(e) => setEditAbono((prev) => ({ ...prev, valor: e.target.value }))}
+                                style={{ fontSize: "13px", padding: "4px 8px" }} />
+                              <TextInput type="date" value={editAbono.fecha}
+                                onChange={(e) => setEditAbono((prev) => ({ ...prev, fecha: e.target.value }))}
+                                style={{ fontSize: "13px", padding: "4px 8px" }} />
+                              <button onClick={handleGuardarEdicion} className="text-xs px-2 py-1 rounded-lg font-semibold" style={{ background: "var(--emerald)", color: "#fff" }}>✓</button>
+                              <button onClick={() => setEditAbono(null)} className="text-xs px-2 py-1 rounded-lg" style={{ background: "var(--line)", color: "var(--ink)" }}>✕</button>
+                            </div>
+                          ) : (
+                            <>
+                              <div>
+                                <span className="text-xs font-utility opacity-60" style={{ color: "var(--ink)" }}>{a.fecha}</span>
+                                <span className="text-xs font-semibold ml-2" style={{ color: "var(--emerald)" }}>${fmt(a.valor)}</span>
+                              </div>
+                              <div className="flex gap-2">
+                                <button onClick={() => setEditAbono({ deudaId: d.id, abonoId: a.id, valor: String(a.valor), fecha: a.fecha })} className="opacity-50">
+                                  <Edit3 size={13} style={{ color: "var(--lilac)" }} />
+                                </button>
+                                <button onClick={() => onEliminarAbonoDeuda(d.id, a.id)} className="opacity-40">
+                                  <Trash2 size={13} style={{ color: "var(--ink)" }} />
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
               )}
             </div>
@@ -1432,7 +1502,7 @@ function SettingsView({ data, onToggleDark, onExport, error }) {
         <p className="text-xs font-utility opacity-60 leading-relaxed" style={{ color: "var(--ink)" }}>
           💌 Tus datos se guardan solitos, sin que hagas nada. Todo queda aquí en tu dispositivo, nadie más los ve.
         </p>
-        <p className="text-[10px] font-utility opacity-30 mt-2 text-right" style={{ color: "var(--ink)" }}>v1.1.0
+        <p className="text-[10px] font-utility opacity-30 mt-2 text-right" style={{ color: "var(--ink)" }}>v1.2.0
         </p>
       </div>
     </div>
@@ -1516,16 +1586,46 @@ export default function App() {
     d.deudas = (d.deudas || []).map((deuda) => {
       if (deuda.id !== deudaId) return deuda;
       const nuevoSaldo = Math.max(deuda.saldoPendiente - abono, 0);
-      return { ...deuda, saldoPendiente: nuevoSaldo, abonos: [...(deuda.abonos || []), { fecha: todayISO(), valor: abono }] };
+      return { ...deuda, saldoPendiente: nuevoSaldo, abonos: [...(deuda.abonos || []), { id: uid(), fecha: todayISO(), valor: abono }] };
+    });
+    return d;
+  });
+  const handleEditarAbonoDeuda = (deudaId, abonoId, nuevoValor, nuevaFecha) => updateAndSave((d) => {
+    d.deudas = (d.deudas || []).map((deuda) => {
+      if (deuda.id !== deudaId) return deuda;
+      const abonosActualizados = (deuda.abonos || []).map((a) =>
+        a.id === abonoId ? { ...a, valor: nuevoValor, fecha: nuevaFecha } : a
+      );
+      const totalAbonado = abonosActualizados.reduce((s, a) => s + (a.valor || 0), 0);
+      return { ...deuda, abonos: abonosActualizados, saldoPendiente: Math.max(deuda.montoTotal - totalAbonado, 0) };
+    });
+    return d;
+  });
+  const handleEliminarAbonoDeuda = (deudaId, abonoId) => updateAndSave((d) => {
+    d.deudas = (d.deudas || []).map((deuda) => {
+      if (deuda.id !== deudaId) return deuda;
+      const abonosFiltrados = (deuda.abonos || []).filter((a) => a.id !== abonoId);
+      const totalAbonado = abonosFiltrados.reduce((s, a) => s + (a.valor || 0), 0);
+      return { ...deuda, abonos: abonosFiltrados, saldoPendiente: Math.max(deuda.montoTotal - totalAbonado, 0) };
     });
     return d;
   });
   const handleDeleteDeuda = (id) => updateAndSave((d) => { d.deudas = (d.deudas || []).filter((x) => x.id !== id); return d; });
 
-  const handleAddMeta = (meta) => updateAndSave((d) => { d.metas.push(meta); return d; });
-  const handleUpdateMeta = (id, ahorroAcumulado) => updateAndSave((d) => {
-    const m = d.metas.find((x) => x.id === id);
-    if (m) m.ahorroAcumulado = ahorroAcumulado;
+  const handleAddMeta = (meta) => updateAndSave((d) => { d.metas.push({ ...meta, abonos: [] }); return d; });
+  const handleAgregarAbonoMeta = (metaId, abono) => updateAndSave((d) => {
+    const m = d.metas.find((x) => x.id === metaId);
+    if (m) m.abonos = [...(m.abonos || []), { id: uid(), fecha: todayISO(), ...abono }];
+    return d;
+  });
+  const handleEditarAbonoMeta = (metaId, abonoId, nuevoValor, nuevaFecha) => updateAndSave((d) => {
+    const m = d.metas.find((x) => x.id === metaId);
+    if (m) m.abonos = (m.abonos || []).map((a) => a.id === abonoId ? { ...a, valor: nuevoValor, fecha: nuevaFecha } : a);
+    return d;
+  });
+  const handleEliminarAbonoMeta = (metaId, abonoId) => updateAndSave((d) => {
+    const m = d.metas.find((x) => x.id === metaId);
+    if (m) m.abonos = (m.abonos || []).filter((a) => a.id !== abonoId);
     return d;
   });
   const handleDeleteMeta = (id) => updateAndSave((d) => { d.metas = d.metas.filter((m) => m.id !== id); return d; });
@@ -1580,7 +1680,10 @@ export default function App() {
           {tab === "metas" && (
             <GoalsAndLimits
               data={data} analytics={analytics}
-              onAddMeta={handleAddMeta} onUpdateMeta={handleUpdateMeta}
+              onAddMeta={handleAddMeta}
+              onAgregarAbono={handleAgregarAbonoMeta}
+              onEditarAbono={handleEditarAbonoMeta}
+              onEliminarAbono={handleEliminarAbonoMeta}
               onDeleteMeta={handleDeleteMeta} onUpdateLimit={handleUpdateLimit}
             />
           )}
@@ -1589,6 +1692,8 @@ export default function App() {
               data={data}
               onAddDeuda={handleAddDeuda}
               onAbonarDeuda={handleAbonarDeuda}
+              onEditarAbonoDeuda={handleEditarAbonoDeuda}
+              onEliminarAbonoDeuda={handleEliminarAbonoDeuda}
               onDeleteDeuda={handleDeleteDeuda}
             />
           )}
