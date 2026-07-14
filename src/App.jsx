@@ -318,20 +318,28 @@ function useAnalytics(data) {
       ? last3.reduce((s, m) => s + Math.max(m.ahorro, 0), 0) / last3.length
       : Math.max(curM.ahorro, 0);
 
-    // Total comprometido en metas y deudas activas (para análisis de capacidad)
     const totalDeudas = (data.deudas || []).reduce((s, d) => s + d.saldoPendiente, 0);
+    const totalDeudaCredito = (data.deudas || []).filter((d) => d.esCreditoAuto).reduce((s, d) => s + d.saldoPendiente, 0);
+    const totalDeudaManual = totalDeudas - totalDeudaCredito;
 
-    const metasConProyeccion = (metas || []).map((meta) => {
-      try {
-      // Calcular ahorroAcumulado desde la lista de abonos
+    // Pre-calcular restantes de todas las metas para distribución proporcional
+    const restantesPorMeta = (metas || []).map((meta) => {
       const abonos = Array.isArray(meta.abonos) ? meta.abonos : [];
       const ahorroAcumulado = abonos.reduce((s, a) => s + (Number(a.valor) || 0), 0);
-      const restante = Math.max(meta.monto - ahorroAcumulado, 0);
+      return Math.max((meta.monto || 0) - ahorroAcumulado, 0);
+    });
+    const totalRestante = restantesPorMeta.reduce((s, r) => s + r, 0);
+
+    const metasConProyeccion = (metas || []).map((meta, idx) => {
+      try {
+      const abonos = Array.isArray(meta.abonos) ? meta.abonos : [];
+      const ahorroAcumulado = abonos.reduce((s, a) => s + (Number(a.valor) || 0), 0);
+      const restante = restantesPorMeta[idx];
       const ritmo = avgAhorro3 > 0 ? avgAhorro3 : (curM.ahorro || 0);
       const mesesEstimados = ritmo > 0 && restante > 0 ? Math.ceil(restante / ritmo) : null;
       const pct = meta.monto > 0 ? Math.min((ahorroAcumulado / meta.monto) * 100, 100) : 0;
 
-      // Cuota sugerida según fecha meta
+      // Cuota sugerida según fecha meta (cuánto necesita por período para llegar a tiempo)
       let cuotaSugerida = null;
       let mesesHastaFecha = null;
       if (meta.fecha && restante > 0) {
@@ -342,53 +350,62 @@ function useAnalytics(data) {
         cuotaSugerida = Math.ceil(restante / mesesHastaFecha);
       }
 
-      // Calcular déficit: cuánto menos se abonó en el último período vs la cuota sugerida
-      const cuotaBase = cuotaSugerida || capacidadAhorro;
+      // Cuota proporcional: fracción de la capacidad de ahorro según peso de esta meta
+      // Si hay varias metas, cada una recibe una porción de la capacidad proporcional a su restante
+      const peso = totalRestante > 0 ? restante / totalRestante : (metas.length > 0 ? 1 / metas.length : 1);
+      const cuotaProporcional = Math.ceil(capacidadAhorro * peso);
+
+      // Déficit: cuánto menos se abonó vs la cuota sugerida en el último período
+      const cuotaBase = cuotaSugerida || cuotaProporcional;
       let deficitAcumulado = 0;
       let cuotaAjustada = null;
       if (abonos.length > 0 && cuotaBase > 0) {
-        // Último abono registrado
         const ultimoAbono = abonos[abonos.length - 1];
-        const diferencia = cuotaBase - (ultimoAbono.valor || 0);
+        const diferencia = cuotaBase - (Number(ultimoAbono.valor) || 0);
         if (diferencia > 0) {
           deficitAcumulado = diferencia;
-          cuotaAjustada = Math.ceil(cuotaBase + diferencia); // cuota normal + recuperar lo que faltó
+          cuotaAjustada = Math.ceil(cuotaBase + diferencia);
         }
       }
 
-      // Análisis de viabilidad
-      const cuotaAnalisis = cuotaSugerida || (ritmo > 0 ? ritmo : 0);
+      // Análisis de viabilidad — comparar cuota necesaria vs capacidad proporcional asignada
+      const cuotaNecesaria = cuotaSugerida || cuotaProporcional;
       let viabilidad = "viable";
       let mensajeAsesor = "";
-      let cuotaRecomendada = null;
-      let mesesConCapacidad = null;
+      let cuotaRecomendada = cuotaProporcional; // siempre proporcional, nunca igual para todas
+      let mesesConCapacidad = cuotaRecomendada > 0 ? Math.ceil(restante / cuotaRecomendada) : null;
 
       if (capacidadAhorro <= 0) {
         viabilidad = "critica";
-        mensajeAsesor = `⚠️ No tienes ahorro registrado en períodos anteriores. Empieza con cualquier monto, aunque sea pequeño, y la app irá ajustando las sugerencias.`;
-      } else if (cuotaAnalisis > capacidadAhorro * 0.8) {
+        mensajeAsesor = `⚠️ No tienes ahorro registrado en períodos anteriores. Empieza con cualquier monto y la app irá ajustando las sugerencias.`;
+      } else if (cuotaNecesaria > cuotaProporcional * 1.5) {
+        // La cuota necesaria supera en más de 50% lo que te corresponde de tu capacidad
         viabilidad = "ajustada";
-        cuotaRecomendada = Math.floor(capacidadAhorro * 0.5);
-        mesesConCapacidad = cuotaRecomendada > 0 ? Math.ceil(restante / cuotaRecomendada) : null;
-        mensajeAsesor = `💡 La cuota necesaria ($${fmt(cuotaAnalisis)}) supera el 80% de tu capacidad de ahorro ($${fmt(capacidadAhorro)}). Te sugiero aportar $${fmt(cuotaRecomendada)} por período — así llegarías a la meta en ~${mesesConCapacidad} períodos sin comprometer tus gastos esenciales.`;
+        const cuotaAlternativa = Math.min(cuotaProporcional, Math.floor(capacidadAhorro * 0.4));
+        const mesesAlternativos = cuotaAlternativa > 0 ? Math.ceil(restante / cuotaAlternativa) : null;
+        mensajeAsesor = `💡 Para esta meta te corresponden $${fmt(cuotaProporcional)}/período (${Math.round(peso * 100)}% de tu capacidad de ahorro). La cuota para llegar a tiempo ($${fmt(cuotaNecesaria)}) supera ese margen. Aportando $${fmt(cuotaAlternativa)} llegarías en ~${mesesAlternativos} períodos.`;
+        cuotaRecomendada = cuotaAlternativa;
+        mesesConCapacidad = mesesAlternativos;
+      } else if (cuotaNecesaria > capacidadAhorro) {
+        viabilidad = "critica";
+        mensajeAsesor = `🚨 La cuota necesaria ($${fmt(cuotaNecesaria)}) supera toda tu capacidad de ahorro actual ($${fmt(capacidadAhorro)}). Con $${fmt(cuotaProporcional)}/período llegarías en ~${mesesConCapacidad} períodos.`;
       } else {
         viabilidad = "viable";
-        cuotaRecomendada = Math.max(cuotaAnalisis, Math.floor(capacidadAhorro * 0.3));
-        mesesConCapacidad = cuotaRecomendada > 0 ? Math.ceil(restante / cuotaRecomendada) : null;
-        mensajeAsesor = `✅ Puedes asumir esta meta cómodamente. Con tu capacidad de ahorro ($${fmt(capacidadAhorro)}/período), podrías aportar $${fmt(cuotaRecomendada)} y alcanzar la meta en ~${mesesConCapacidad} períodos.`;
+        mensajeAsesor = `✅ Esta meta es viable. Te corresponden $${fmt(cuotaProporcional)}/período (${Math.round(peso * 100)}% de tu capacidad${metas.length > 1 ? ", distribuida entre tus metas" : ""}). Así llegarías en ~${mesesConCapacidad} períodos.`;
       }
 
       return {
         ...meta, abonos, ahorroAcumulado, restante, mesesEstimados, pct,
         cuotaSugerida, mesesHastaFecha, deficitAcumulado, cuotaAjustada,
-        capacidadAhorro, viabilidad, mensajeAsesor, cuotaRecomendada, mesesConCapacidad,
+        cuotaRecomendada, mesesConCapacidad, cuotaProporcional, peso,
+        capacidadAhorro, viabilidad, mensajeAsesor,
       };
       } catch (_) {
-        // si una meta individual está corrupta, devolverla con valores seguros
         return { ...meta, abonos: [], ahorroAcumulado: 0, restante: meta.monto || 0, pct: 0,
           mesesEstimados: null, cuotaSugerida: null, mesesHastaFecha: null,
-          deficitAcumulado: 0, cuotaAjustada: null, capacidadAhorro: 0,
-          viabilidad: "viable", mensajeAsesor: "", cuotaRecomendada: null, mesesConCapacidad: null,
+          deficitAcumulado: 0, cuotaAjustada: null, cuotaRecomendada: null,
+          mesesConCapacidad: null, cuotaProporcional: 0, peso: 0,
+          capacidadAhorro: 0, viabilidad: "viable", mensajeAsesor: "",
         };
       }
     });
@@ -440,7 +457,7 @@ function useAnalytics(data) {
       avgAhorro3, impulsivoTotal, impulsivoPct, smallTotal, smallCount: small.length,
       totalAcumulado, cuotasPendientes, limiteStatus, tasaAhorro, pctGastoSobreIngreso,
       libre: curM.libre, librePct, metasConProyeccion, recs, semaforo,
-      capacidadAhorro, totalDeudas, deudaVsCapacidad,
+      capacidadAhorro, totalDeudas, totalDeudaCredito, totalDeudaManual, deudaVsCapacidad,
     };
   }, [data]);
 }
@@ -1153,6 +1170,8 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
 
   const capacidadAhorro = analytics?.capacidadAhorro || 0;
   const totalDeudas = analytics?.totalDeudas || 0;
+  const totalDeudaCredito = analytics?.totalDeudaCredito || 0;
+  const totalDeudaManual = analytics?.totalDeudaManual || 0;
   const deudaVsCapacidad = analytics?.deudaVsCapacidad;
 
   const handleAddMeta = () => {
@@ -1189,10 +1208,15 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
         <p className="text-xs font-utility opacity-60" style={{ color: "var(--ink)" }}>Promedio de lo que realmente ahorraste en tus últimos períodos registrados.</p>
         {totalDeudas > 0 && (
           <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--lilac)" }}>
-            <p className="text-xs font-utility opacity-70" style={{ color: "var(--ink)" }}>
-              📋 Deudas activas: <span className="font-semibold" style={{ color: "var(--red)" }}>${fmt(totalDeudas)}</span>
+            <p className="text-xs font-utility opacity-70 mb-1" style={{ color: "var(--ink)" }}>
+              📋 Total deudas: <span className="font-semibold" style={{ color: "var(--red)" }}>${fmt(totalDeudas)}</span>
               {deudaVsCapacidad != null && ` · ~${deudaVsCapacidad.toFixed(1)} años para liquidarlas`}
             </p>
+            {totalDeudaCredito > 0 && (
+              <p className="text-[11px] font-utility opacity-60" style={{ color: "var(--ink)" }}>
+                💳 Crédito acumulado: ${fmt(totalDeudaCredito)} · 🏦 Otras deudas: ${fmt(totalDeudaManual)}
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -1235,50 +1259,99 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
                 <span className="font-semibold opacity-80">{Math.round(m.pct)}% de ${fmt(m.monto)}</span>
               </div>
 
-              {/* Cuota sugerida normal */}
-              {m.cuotaSugerida != null && m.restante > 0 && (
-                <div className="rounded-[12px] px-3 py-2 mb-2" style={{ background: "var(--emerald-soft)" }}>
-                  <p className="text-[11px] font-utility" style={{ color: "var(--ink)" }}>
-                    💰 Cuota sugerida para llegar a tiempo:
-                    <span className="font-semibold" style={{ color: "var(--emerald)" }}> ${fmt(m.cuotaSugerida)}/período</span>
+              {/* Cuota sugerida — colapsable */}
+              {(m.cuotaSugerida != null || m.cuotaRecomendada != null) && m.restante > 0 && (
+                <button
+                  onClick={() => setExpandedMeta(expandedMeta === `cuota-${m.id}` ? null : `cuota-${m.id}`)}
+                  className="w-full text-left rounded-[12px] px-3 py-2 mb-2"
+                  style={{ background: "var(--emerald-soft)" }}
+                >
+                  <p className="text-[11px] font-utility font-semibold" style={{ color: "var(--emerald)" }}>
+                    💰 Cuotas sugeridas {expandedMeta === `cuota-${m.id}` ? "▲" : "▼"}
                   </p>
-                </div>
-              )}
-
-              {/* Cuota ajustada por déficit */}
-              {m.deficitAcumulado > 0 && m.restante > 0 && (
-                <div className="rounded-[12px] px-3 py-2 mb-2" style={{ background: "var(--amber-soft)" }}>
-                  <p className="text-[11px] font-utility" style={{ color: "var(--ink)" }}>
-                    ⚠️ El período pasado abonaste menos de lo sugerido (déficit: ${fmt(m.deficitAcumulado)}). Para recuperar el ritmo, el próximo período abona
-                    <span className="font-semibold" style={{ color: "var(--amber)" }}> ${fmt(m.cuotaAjustada)}</span>
-                  </p>
-                </div>
-              )}
-
-              {/* Consejo asesor */}
-              {m.mensajeAsesor && m.restante > 0 && (
-                <button onClick={() => setExpandedMeta(expandedMeta === m.id ? null : m.id)} className="w-full text-left rounded-[12px] px-3 py-2 mb-3" style={{ background: m.viabilidad === "critica" ? "var(--red-soft)" : m.viabilidad === "ajustada" ? "var(--amber-soft)" : "var(--lilac-soft)" }}>
-                  <p className="text-[11px] font-utility font-semibold" style={{ color: m.viabilidad === "critica" ? "var(--red)" : m.viabilidad === "ajustada" ? "var(--amber)" : "var(--lilac)" }}>
-                    🧠 Consejo de tu asesora {expandedMeta === m.id ? "▲" : "▼"}
-                  </p>
-                  {expandedMeta === m.id && <p className="text-[12px] font-utility leading-relaxed mt-1" style={{ color: "var(--ink)" }}>{m.mensajeAsesor}</p>}
+                  {expandedMeta === `cuota-${m.id}` && (
+                    <div className="mt-2 space-y-1.5">
+                      {m.cuotaSugerida != null && (
+                        <p className="text-[12px] font-utility" style={{ color: "var(--ink)" }}>
+                          📅 Para llegar a tu fecha meta: <span className="font-semibold" style={{ color: "var(--emerald)" }}>${fmt(m.cuotaSugerida)}/período</span>
+                        </p>
+                      )}
+                      {m.cuotaRecomendada != null && (
+                        <p className="text-[12px] font-utility" style={{ color: "var(--ink)" }}>
+                          🎯 Según tu capacidad ({Math.round((m.peso || 0) * 100)}% de ${fmt(m.capacidadAhorro)}): <span className="font-semibold" style={{ color: "var(--emerald)" }}>${fmt(m.cuotaRecomendada)}/período</span>
+                          {m.mesesConCapacidad && <span className="opacity-60"> · ~{m.mesesConCapacidad} períodos</span>}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </button>
               )}
 
-              {/* Stats */}
-              {m.restante > 0 && (
-                <div className="grid grid-cols-2 gap-2 mb-3">
-                  <div className="rounded-[10px] p-2.5 text-center" style={{ background: "var(--card-alt)" }}>
-                    <p className="text-[10px] font-utility opacity-50 mb-0.5" style={{ color: "var(--ink)" }}>Falta</p>
-                    <p className="font-mono text-sm font-semibold" style={{ color: "var(--ink)" }}>${fmt(m.restante)}</p>
-                  </div>
-                  <div className="rounded-[10px] p-2.5 text-center" style={{ background: "var(--card-alt)" }}>
-                    <p className="text-[10px] font-utility opacity-50 mb-0.5" style={{ color: "var(--ink)" }}>Cuota ideal</p>
-                    <p className="font-mono text-sm font-semibold" style={{ color: "var(--ink)" }}>
-                      {m.cuotaRecomendada ? `$${fmt(m.cuotaRecomendada)}` : (m.mesesEstimados ? `~${m.mesesEstimados} per.` : "—")}
+              {/* Cuota ajustada por déficit — colapsable */}
+              {m.deficitAcumulado > 0 && m.restante > 0 && (
+                <button
+                  onClick={() => setExpandedMeta(expandedMeta === `deficit-${m.id}` ? null : `deficit-${m.id}`)}
+                  className="w-full text-left rounded-[12px] px-3 py-2 mb-2"
+                  style={{ background: "var(--amber-soft)" }}
+                >
+                  <p className="text-[11px] font-utility font-semibold" style={{ color: "var(--amber)" }}>
+                    ⚠️ Alerta de déficit {expandedMeta === `deficit-${m.id}` ? "▲" : "▼"}
+                  </p>
+                  {expandedMeta === `deficit-${m.id}` && (
+                    <p className="text-[12px] font-utility mt-1 leading-relaxed" style={{ color: "var(--ink)" }}>
+                      El período pasado abonaste menos de lo sugerido (déficit: ${fmt(m.deficitAcumulado)}). Para recuperar el ritmo, el próximo período abona <span className="font-semibold" style={{ color: "var(--amber)" }}>${fmt(m.cuotaAjustada)}</span>
                     </p>
-                  </div>
-                </div>
+                  )}
+                </button>
+              )}
+
+              {/* Consejo asesor — colapsable */}
+              {m.mensajeAsesor && m.restante > 0 && (
+                <button
+                  onClick={() => setExpandedMeta(expandedMeta === `consejo-${m.id}` ? null : `consejo-${m.id}`)}
+                  className="w-full text-left rounded-[12px] px-3 py-2 mb-3"
+                  style={{ background: m.viabilidad === "critica" ? "var(--red-soft)" : m.viabilidad === "ajustada" ? "var(--amber-soft)" : "var(--lilac-soft)" }}
+                >
+                  <p className="text-[11px] font-utility font-semibold" style={{ color: m.viabilidad === "critica" ? "var(--red)" : m.viabilidad === "ajustada" ? "var(--amber)" : "var(--lilac)" }}>
+                    🧠 Consejo de tu asesora {expandedMeta === `consejo-${m.id}` ? "▲" : "▼"}
+                  </p>
+                  {expandedMeta === `consejo-${m.id}` && (
+                    <p className="text-[12px] font-utility leading-relaxed mt-1" style={{ color: "var(--ink)" }}>{m.mensajeAsesor}</p>
+                  )}
+                </button>
+              )}
+
+              {/* Cuánto falta — colapsable */}
+              {m.restante > 0 && (
+                <button
+                  onClick={() => setExpandedMeta(expandedMeta === `falta-${m.id}` ? null : `falta-${m.id}`)}
+                  className="w-full text-left rounded-[12px] px-3 py-2 mb-2"
+                  style={{ background: "var(--card-alt)" }}
+                >
+                  <p className="text-[11px] font-utility font-semibold" style={{ color: "var(--ink)", opacity: 0.6 }}>
+                    📊 Ver cuánto falta {expandedMeta === `falta-${m.id}` ? "▲" : "▼"}
+                  </p>
+                  {expandedMeta === `falta-${m.id}` && (
+                    <div className="mt-2 space-y-1">
+                      <div className="flex justify-between text-xs font-utility" style={{ color: "var(--ink)" }}>
+                        <span className="opacity-60">Falta por ahorrar</span>
+                        <span className="font-semibold">${fmt(m.restante)}</span>
+                      </div>
+                      {m.cuotaRecomendada && (
+                        <div className="flex justify-between text-xs font-utility" style={{ color: "var(--ink)" }}>
+                          <span className="opacity-60">Cuota mensual sugerida</span>
+                          <span className="font-semibold" style={{ color: "var(--lilac)" }}>${fmt(m.cuotaRecomendada)}</span>
+                        </div>
+                      )}
+                      {m.mesesConCapacidad && (
+                        <div className="flex justify-between text-xs font-utility" style={{ color: "var(--ink)" }}>
+                          <span className="opacity-60">Tiempo estimado</span>
+                          <span className="font-semibold">~{m.mesesConCapacidad} períodos</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </button>
               )}
 
               {/* Abono */}
@@ -1447,8 +1520,18 @@ function DeudasView({ data, onAddDeuda, onAbonarDeuda, onEditarAbonoDeuda, onEli
             <div key={d.id} className="rounded-[20px] p-4" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
               <div className="flex items-start justify-between mb-2">
                 <div>
-                  <p className="font-utility font-semibold text-sm" style={{ color: "var(--ink)" }}>{d.nombre}</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-utility font-semibold text-sm" style={{ color: "var(--ink)" }}>{d.nombre}</p>
+                    {d.esCreditoAuto && (
+                      <span className="text-[10px] font-utility px-2 py-0.5 rounded-full" style={{ background: "var(--amber-soft)", color: "var(--amber)" }}>Auto crédito</span>
+                    )}
+                  </div>
                   {d.notas && <p className="text-xs font-utility opacity-50 mt-0.5" style={{ color: "var(--ink)" }}>{d.notas}</p>}
+                  {d.cuotasMensuales && d.saldoPendiente > 0 && (
+                    <p className="text-[11px] font-utility mt-1" style={{ color: "var(--emerald)" }}>
+                      💡 Cuota sugerida: <span className="font-semibold">${fmt(d.cuotasMensuales)}</span>
+                    </p>
+                  )}
                 </div>
                 <button onClick={() => onDeleteDeuda(d.id)} className="opacity-30">
                   <Trash2 size={14} style={{ color: "var(--ink)" }} />
@@ -1641,11 +1724,32 @@ export default function App() {
 
   const handleAddMovement = (type) => (item) => {
     updateAndSave((d) => {
-      if (type === "gasto") d.gastos.push(item);
-      else if (type === "ingreso") d.ingresos.push(item);
-      else if (type === "ahorro") {
-        d.ahorros.push(item);
+      if (type === "gasto") {
+        d.gastos.push(item);
+        // Si es crédito diferido, crear una deuda automática en el módulo de Deudas
+        if (item.metodo === "Crédito" && (item.creditoTipo === "Acumula próximo mes" || item.creditoTipo === "Diferir en cuotas")) {
+          if (!d.deudas) d.deudas = [];
+          const nombreDeuda = `💳 ${item.descripcion || item.categoria} (crédito)`;
+          const cuotasNum = item.creditoTipo === "Diferir en cuotas" ? (item.cuotas || 1) : 1;
+          const notaDeuda = item.creditoTipo === "Diferir en cuotas"
+            ? `${cuotasNum} cuotas de $${fmt(Math.ceil(item.valor / cuotasNum))} · Registrado el ${item.fecha}`
+            : `Pago completo en siguiente período · Registrado el ${item.fecha}`;
+          d.deudas.push({
+            id: uid(),
+            nombre: nombreDeuda,
+            montoTotal: item.valor,
+            saldoPendiente: item.valor,
+            abonos: [],
+            fecha: item.fecha,
+            notas: notaDeuda,
+            gastoId: item.id, // referencia al gasto original
+            esCreditoAuto: true,
+            cuotasMensuales: item.creditoTipo === "Diferir en cuotas" ? Math.ceil(item.valor / cuotasNum) : item.valor,
+          });
+        }
       }
+      else if (type === "ingreso") d.ingresos.push(item);
+      else if (type === "ahorro") d.ahorros.push(item);
       return d;
     });
   };
