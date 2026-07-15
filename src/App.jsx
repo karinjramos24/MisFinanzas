@@ -372,7 +372,8 @@ function useAnalytics(data) {
       const cuotaNecesaria = cuotaSugerida || cuotaProporcional;
       let viabilidad = "viable";
       let mensajeAsesor = "";
-      let cuotaRecomendada = cuotaProporcional; // siempre proporcional, nunca igual para todas
+      let cuotaRecomendada = cuotaProporcional;
+      // Tiempo estimado = restante de ESTA meta / cuota que le corresponde a ESTA meta
       let mesesConCapacidad = cuotaRecomendada > 0 ? Math.ceil(restante / cuotaRecomendada) : null;
 
       if (capacidadAhorro <= 0) {
@@ -1259,34 +1260,6 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
                 <span className="font-semibold opacity-80">{Math.round(m.pct)}% de ${fmt(m.monto)}</span>
               </div>
 
-              {/* Cuota sugerida — colapsable */}
-              {(m.cuotaSugerida != null || m.cuotaRecomendada != null) && m.restante > 0 && (
-                <button
-                  onClick={() => setExpandedMeta(expandedMeta === `cuota-${m.id}` ? null : `cuota-${m.id}`)}
-                  className="w-full text-left rounded-[12px] px-3 py-2 mb-2"
-                  style={{ background: "var(--emerald-soft)" }}
-                >
-                  <p className="text-[11px] font-utility font-semibold" style={{ color: "var(--emerald)" }}>
-                    💰 Cuotas sugeridas {expandedMeta === `cuota-${m.id}` ? "▲" : "▼"}
-                  </p>
-                  {expandedMeta === `cuota-${m.id}` && (
-                    <div className="mt-2 space-y-1.5">
-                      {m.cuotaSugerida != null && (
-                        <p className="text-[12px] font-utility" style={{ color: "var(--ink)" }}>
-                          📅 Para llegar a tu fecha meta: <span className="font-semibold" style={{ color: "var(--emerald)" }}>${fmt(m.cuotaSugerida)}/período</span>
-                        </p>
-                      )}
-                      {m.cuotaRecomendada != null && (
-                        <p className="text-[12px] font-utility" style={{ color: "var(--ink)" }}>
-                          🎯 Según tu capacidad ({Math.round((m.peso || 0) * 100)}% de ${fmt(m.capacidadAhorro)}): <span className="font-semibold" style={{ color: "var(--emerald)" }}>${fmt(m.cuotaRecomendada)}/período</span>
-                          {m.mesesConCapacidad && <span className="opacity-60"> · ~{m.mesesConCapacidad} períodos</span>}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </button>
-              )}
-
               {/* Cuota ajustada por déficit — colapsable */}
               {m.deficitAcumulado > 0 && m.restante > 0 && (
                 <button
@@ -1337,16 +1310,16 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
                         <span className="opacity-60">Falta por ahorrar</span>
                         <span className="font-semibold">${fmt(m.restante)}</span>
                       </div>
-                      {m.cuotaRecomendada && (
+                      {m.cuotaRecomendada > 0 && (
                         <div className="flex justify-between text-xs font-utility" style={{ color: "var(--ink)" }}>
                           <span className="opacity-60">Cuota mensual sugerida</span>
                           <span className="font-semibold" style={{ color: "var(--lilac)" }}>${fmt(m.cuotaRecomendada)}</span>
                         </div>
                       )}
-                      {m.mesesConCapacidad && (
+                      {m.cuotaRecomendada > 0 && (
                         <div className="flex justify-between text-xs font-utility" style={{ color: "var(--ink)" }}>
                           <span className="opacity-60">Tiempo estimado</span>
-                          <span className="font-semibold">~{m.mesesConCapacidad} períodos</span>
+                          <span className="font-semibold">~{Math.ceil(m.restante / m.cuotaRecomendada)} períodos</span>
                         </div>
                       )}
                     </div>
