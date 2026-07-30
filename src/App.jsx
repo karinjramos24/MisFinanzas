@@ -59,6 +59,7 @@ const CATS_GASTO = [
 const CATS_INGRESO = ["Salario", "Prima", "Vacaciones", "Bonificación", "Cesantías", "Independiente", "Regalo", "Inversión", "Otro"];
 const METODOS = ["Efectivo", "Débito", "Crédito", "Transferencia"];
 const CREDITO_TIPOS = ["Pago inmediato", "Acumula próximo mes", "Diferir en cuotas"];
+const DEUDA_TC_TIPOS = ["Pago total de una vez", "Cuotas fijas"];
 
 const fmt = (n) =>
   new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 }).format(Math.round(n || 0));
@@ -153,6 +154,7 @@ const seedData = () => {
     deudas: [
       { id: uid(), nombre: "Préstamo banco", montoTotal: 5000000, saldoPendiente: 4000000, abonos: [], fecha: todayISO(), notas: "" },
     ],
+    deudasTC: [], // deudas específicas de tarjeta de crédito
     limites: {
       "Servicios públicos": 220000, "Transporte": 150000, "Gastos personales": 80000,
       "Desayunos": 150000, "Almuerzos": 200000, "Fines de semana": 150000,
@@ -179,6 +181,7 @@ function useStorage() {
         const parsed = JSON.parse(raw);
         // migración: añadir deudas si no existe
         if (!parsed.deudas) parsed.deudas = [];
+        if (!parsed.deudasTC) parsed.deudasTC = [];
         // migración: convertir metas con ahorroAcumulado simple a lista de abonos
         if (parsed.metas) {
           parsed.metas = parsed.metas.map((meta) => {
@@ -1278,8 +1281,9 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
                 </button>
               )}
 
-              {/* Consejo asesor — colapsable */}
-              {m.mensajeAsesor && m.restante > 0 && (
+
+              {/* Consejo unificado con dos opciones — colapsable */}
+              {m.restante > 0 && (
                 <button
                   onClick={() => setExpandedMeta(expandedMeta === `consejo-${m.id}` ? null : `consejo-${m.id}`)}
                   className="w-full text-left rounded-[12px] px-3 py-2 mb-3"
@@ -1289,38 +1293,49 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
                     🧠 Consejo de tu asesora {expandedMeta === `consejo-${m.id}` ? "▲" : "▼"}
                   </p>
                   {expandedMeta === `consejo-${m.id}` && (
-                    <p className="text-[12px] font-utility leading-relaxed mt-1" style={{ color: "var(--ink)" }}>{m.mensajeAsesor}</p>
-                  )}
-                </button>
-              )}
-
-              {/* Cuánto falta — colapsable */}
-              {m.restante > 0 && (
-                <button
-                  onClick={() => setExpandedMeta(expandedMeta === `falta-${m.id}` ? null : `falta-${m.id}`)}
-                  className="w-full text-left rounded-[12px] px-3 py-2 mb-2"
-                  style={{ background: "var(--card-alt)" }}
-                >
-                  <p className="text-[11px] font-utility font-semibold" style={{ color: "var(--ink)", opacity: 0.6 }}>
-                    📊 Ver cuánto falta {expandedMeta === `falta-${m.id}` ? "▲" : "▼"}
-                  </p>
-                  {expandedMeta === `falta-${m.id}` && (
-                    <div className="mt-2 space-y-1">
-                      <div className="flex justify-between text-xs font-utility" style={{ color: "var(--ink)" }}>
+                    <div className="mt-2 space-y-3">
+                      <div className="flex justify-between text-xs font-utility pt-1" style={{ color: "var(--ink)", borderTop: "1px solid rgba(0,0,0,0.06)" }}>
                         <span className="opacity-60">Falta por ahorrar</span>
                         <span className="font-semibold">${fmt(m.restante)}</span>
                       </div>
-                      {m.cuotaRecomendada > 0 && (
-                        <div className="flex justify-between text-xs font-utility" style={{ color: "var(--ink)" }}>
-                          <span className="opacity-60">Cuota mensual sugerida</span>
-                          <span className="font-semibold" style={{ color: "var(--lilac)" }}>${fmt(m.cuotaRecomendada)}</span>
-                        </div>
-                      )}
-                      {m.cuotaRecomendada > 0 && (
-                        <div className="flex justify-between text-xs font-utility" style={{ color: "var(--ink)" }}>
-                          <span className="opacity-60">Tiempo estimado</span>
-                          <span className="font-semibold">~{Math.ceil(m.restante / m.cuotaRecomendada)} períodos</span>
-                        </div>
+                      {/* Opción A: según capacidad */}
+                      <div className="rounded-[10px] p-2.5" style={{ background: "rgba(255,255,255,0.5)" }}>
+                        <p className="text-[10px] font-utility font-semibold uppercase tracking-wide mb-1.5 opacity-60" style={{ color: "var(--ink)" }}>Opción A — Según tu capacidad de ahorro</p>
+                        {m.cuotaRecomendada > 0 ? (
+                          <>
+                            <div className="flex justify-between text-xs font-utility mb-1" style={{ color: "var(--ink)" }}>
+                              <span className="opacity-70">Puedes pagar por período</span>
+                              <span className="font-semibold" style={{ color: "var(--emerald)" }}>${fmt(m.cuotaRecomendada)}</span>
+                            </div>
+                            <div className="flex justify-between text-xs font-utility" style={{ color: "var(--ink)" }}>
+                              <span className="opacity-70">Lo lograrías en</span>
+                              <span className="font-semibold">~{Math.ceil(m.restante / m.cuotaRecomendada)} períodos</span>
+                            </div>
+                          </>
+                        ) : (
+                          <p className="text-[11px] font-utility opacity-60" style={{ color: "var(--ink)" }}>Registra ahorros para calcular tu capacidad.</p>
+                        )}
+                      </div>
+                      {/* Opción B: según fecha meta */}
+                      <div className="rounded-[10px] p-2.5" style={{ background: "rgba(255,255,255,0.5)" }}>
+                        <p className="text-[10px] font-utility font-semibold uppercase tracking-wide mb-1.5 opacity-60" style={{ color: "var(--ink)" }}>Opción B — Para cumplir tu fecha meta</p>
+                        {m.cuotaSugerida != null && m.mesesHastaFecha != null ? (
+                          <>
+                            <div className="flex justify-between text-xs font-utility mb-1" style={{ color: "var(--ink)" }}>
+                              <span className="opacity-70">Necesitas pagar por período</span>
+                              <span className="font-semibold" style={{ color: "var(--lilac)" }}>${fmt(m.cuotaSugerida)}</span>
+                            </div>
+                            <div className="flex justify-between text-xs font-utility" style={{ color: "var(--ink)" }}>
+                              <span className="opacity-70">Tienes</span>
+                              <span className="font-semibold">~{m.mesesHastaFecha} períodos</span>
+                            </div>
+                          </>
+                        ) : (
+                          <p className="text-[11px] font-utility opacity-60" style={{ color: "var(--ink)" }}>Agrega una fecha límite para ver esta opción.</p>
+                        )}
+                      </div>
+                      {m.viabilidad !== "viable" && (
+                        <p className="text-[11px] font-utility leading-relaxed opacity-80" style={{ color: "var(--ink)" }}>{m.mensajeAsesor}</p>
                       )}
                     </div>
                   )}
@@ -1434,28 +1449,40 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
    Registro de deudas con abonos y seguimiento de saldo pendiente.
    Es independiente de los gastos con tarjeta de crédito.
 ------------------------------------------------------------------------- */
-function DeudasView({ data, onAddDeuda, onAbonarDeuda, onEditarAbonoDeuda, onEliminarAbonoDeuda, onDeleteDeuda }) {
+function DeudasView({ data, onAddDeuda, onAbonarDeuda, onEditarAbonoDeuda, onEliminarAbonoDeuda, onDeleteDeuda,
+  onAddDeudaTC, onAbonarDeudaTC, onDeleteDeudaTC, onEditarAbonoTC, onEliminarAbonoTC }) {
+
+  // Estado deudas normales
   const [showAddDeuda, setShowAddDeuda] = useState(false);
   const [nombre, setNombre] = useState("");
   const [monto, setMonto] = useState("");
   const [notas, setNotas] = useState("");
   const [abonoValues, setAbonoValues] = useState({});
   const [expandedAbonos, setExpandedAbonos] = useState({});
-  const [editAbono, setEditAbono] = useState(null); // { deudaId, abonoId, valor, fecha }
+  const [editAbono, setEditAbono] = useState(null);
+
+  // Estado tarjeta de crédito
+  const [showAddTC, setShowAddTC] = useState(false);
+  const [tcNombre, setTcNombre] = useState("");
+  const [tcMonto, setTcMonto] = useState("");
+  const [tcTipo, setTcTipo] = useState(DEUDA_TC_TIPOS[0]);
+  const [tcCuotas, setTcCuotas] = useState("");
+  const [tcNotas, setTcNotas] = useState("");
+  const [abonoTCValues, setAbonoTCValues] = useState({});
+  const [expandedAbonosTC, setExpandedAbonosTC] = useState({});
+  const [editAbonoTC, setEditAbonoTC] = useState(null);
 
   const handleAddDeuda = () => {
     const m = parseFloat(monto);
     if (!nombre.trim() || !m || m <= 0) return;
     onAddDeuda({ id: uid(), nombre: nombre.trim(), montoTotal: m, saldoPendiente: m, abonos: [], fecha: todayISO(), notas: notas.trim() });
-    setNombre(""); setMonto(""); setNotas("");
-    setShowAddDeuda(false);
+    setNombre(""); setMonto(""); setNotas(""); setShowAddDeuda(false);
   };
 
   const handleAbono = (deudaId, saldoActual) => {
     const val = parseFloat(abonoValues[deudaId]);
     if (!val || val <= 0) return;
-    const abono = Math.min(val, saldoActual);
-    onAbonarDeuda(deudaId, abono);
+    onAbonarDeuda(deudaId, Math.min(val, saldoActual));
     setAbonoValues((prev) => ({ ...prev, [deudaId]: "" }));
   };
 
@@ -1467,126 +1494,251 @@ function DeudasView({ data, onAddDeuda, onAbonarDeuda, onEditarAbonoDeuda, onEli
     setEditAbono(null);
   };
 
+  const handleAddTC = () => {
+    const m = parseFloat(tcMonto);
+    if (!tcNombre.trim() || !m || m <= 0) return;
+    const cuotasNum = tcTipo === "Cuotas fijas" ? (parseInt(tcCuotas) || 1) : 1;
+    const cuotaMensual = tcTipo === "Cuotas fijas" ? Math.ceil(m / cuotasNum) : m;
+    onAddDeudaTC({
+      id: uid(), nombre: tcNombre.trim(), montoTotal: m, saldoPendiente: m,
+      abonos: [], fecha: todayISO(), notas: tcNotas.trim(),
+      tipo: tcTipo, cuotasTotal: cuotasNum, cuotaMensual,
+    });
+    setTcNombre(""); setTcMonto(""); setTcCuotas(""); setTcNotas(""); setShowAddTC(false);
+  };
+
+  const handleAbonoTC = (tcId, saldoActual) => {
+    const val = parseFloat(abonoTCValues[tcId]);
+    if (!val || val <= 0) return;
+    onAbonarDeudaTC(tcId, Math.min(val, saldoActual));
+    setAbonoTCValues((prev) => ({ ...prev, [tcId]: "" }));
+  };
+
+  const handleGuardarEdicionTC = () => {
+    if (!editAbonoTC) return;
+    const val = parseFloat(editAbonoTC.valor);
+    if (!val || val <= 0) return;
+    onEditarAbonoTC(editAbonoTC.tcId, editAbonoTC.abonoId, val, editAbonoTC.fecha);
+    setEditAbonoTC(null);
+  };
+
   const deudas = data.deudas || [];
+  const deudasTC = data.deudasTC || [];
 
-  return (
-    <div className="px-5 pt-6 pb-4 space-y-5">
-      <div className="flex items-center justify-between">
-        <h1 className="font-display text-[26px]" style={{ color: "var(--ink)" }}>Mis deudas 🏦</h1>
-        <button onClick={() => setShowAddDeuda(true)} className="flex items-center gap-1 text-xs font-utility font-medium px-3 py-1.5 rounded-full" style={{ background: "var(--lilac-soft)", color: "var(--lilac)" }}>
-          <Plus size={14} /> Nueva
-        </button>
-      </div>
-
-      {deudas.length === 0 && (
-        <div className="text-center py-12">
-          <p className="text-3xl mb-2">🎉</p>
-          <p className="font-utility text-sm opacity-50" style={{ color: "var(--ink)" }}>Sin deudas registradas. ¡Genial!</p>
-        </div>
-      )}
-
-      <div className="space-y-4">
-        {deudas.map((d) => {
-          const pct = d.montoTotal > 0 ? Math.min(((d.montoTotal - d.saldoPendiente) / d.montoTotal) * 100, 100) : 0;
-          const pagado = d.montoTotal - d.saldoPendiente;
-          return (
-            <div key={d.id} className="rounded-[20px] p-4" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
-              <div className="flex items-start justify-between mb-2">
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="font-utility font-semibold text-sm" style={{ color: "var(--ink)" }}>{d.nombre}</p>
-                    {d.esCreditoAuto && (
-                      <span className="text-[10px] font-utility px-2 py-0.5 rounded-full" style={{ background: "var(--amber-soft)", color: "var(--amber)" }}>Auto crédito</span>
-                    )}
-                  </div>
-                  {d.notas && <p className="text-xs font-utility opacity-50 mt-0.5" style={{ color: "var(--ink)" }}>{d.notas}</p>}
-                  {d.cuotasMensuales && d.saldoPendiente > 0 && (
-                    <p className="text-[11px] font-utility mt-1" style={{ color: "var(--emerald)" }}>
-                      💡 Cuota sugerida: <span className="font-semibold">${fmt(d.cuotasMensuales)}</span>
-                    </p>
-                  )}
-                </div>
-                <button onClick={() => onDeleteDeuda(d.id)} className="opacity-30">
-                  <Trash2 size={14} style={{ color: "var(--ink)" }} />
-                </button>
-              </div>
-
-              <div className="h-2.5 rounded-full overflow-hidden mb-2" style={{ background: "var(--line)" }}>
-                <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: pct >= 100 ? "var(--emerald)" : "var(--lilac)" }} />
-              </div>
-
-              <div className="flex justify-between text-xs font-utility mb-3" style={{ color: "var(--ink)" }}>
-                <span className="opacity-60">Pagado: <span className="font-semibold" style={{ color: "var(--emerald)" }}>${fmt(pagado)}</span></span>
-                <span className="opacity-60">Pendiente: <span className="font-semibold" style={{ color: "var(--red)" }}>${fmt(d.saldoPendiente)}</span></span>
-              </div>
-              <div className="text-xs font-utility opacity-40 mb-3 text-right" style={{ color: "var(--ink)" }}>
-                Total: ${fmt(d.montoTotal)} · {Math.round(pct)}% pagado
-              </div>
-
-              {d.saldoPendiente > 0 ? (
-                <div className="flex gap-2 mb-3">
-                  <TextInput type="number" placeholder="Valor del abono"
-                    value={abonoValues[d.id] || ""}
-                    onChange={(e) => setAbonoValues((prev) => ({ ...prev, [d.id]: e.target.value }))}
-                    style={{ fontSize: "14px", padding: "8px 12px" }} />
-                  <button onClick={() => handleAbono(d.id, d.saldoPendiente)} className="px-4 py-2 rounded-xl text-sm font-utility font-semibold flex-shrink-0" style={{ background: "var(--lilac)", color: "#fff" }}>
-                    Abonar
-                  </button>
+  const renderAbonos = (lista, deudaId, isTC) => (
+    <div>
+      <button onClick={() => setExpandedAbonos((prev) => ({ ...prev, [deudaId]: !prev[deudaId] }))} className="text-[11px] font-utility opacity-60 mb-2" style={{ color: "var(--ink)" }}>
+        {expandedAbonos[deudaId] ? "▲ Ocultar" : "▼ Ver"} abonos ({lista.length})
+      </button>
+      {expandedAbonos[deudaId] && (
+        <div className="space-y-1.5">
+          {lista.map((a) => (
+            <div key={a.id} className="flex items-center justify-between rounded-[10px] px-3 py-2" style={{ background: "var(--card-alt)" }}>
+              {(isTC ? editAbonoTC?.abonoId : editAbono?.abonoId) === a.id ? (
+                <div className="flex gap-2 flex-1">
+                  <TextInput type="number"
+                    value={isTC ? editAbonoTC.valor : editAbono.valor}
+                    onChange={(e) => isTC ? setEditAbonoTC((p) => ({ ...p, valor: e.target.value })) : setEditAbono((p) => ({ ...p, valor: e.target.value }))}
+                    style={{ fontSize: "13px", padding: "4px 8px" }} />
+                  <TextInput type="date"
+                    value={isTC ? editAbonoTC.fecha : editAbono.fecha}
+                    onChange={(e) => isTC ? setEditAbonoTC((p) => ({ ...p, fecha: e.target.value })) : setEditAbono((p) => ({ ...p, fecha: e.target.value }))}
+                    style={{ fontSize: "13px", padding: "4px 8px" }} />
+                  <button onClick={isTC ? handleGuardarEdicionTC : handleGuardarEdicion} className="text-xs px-2 py-1 rounded-lg font-semibold" style={{ background: "var(--emerald)", color: "#fff" }}>✓</button>
+                  <button onClick={() => isTC ? setEditAbonoTC(null) : setEditAbono(null)} className="text-xs px-2 py-1 rounded-lg" style={{ background: "var(--line)", color: "var(--ink)" }}>✕</button>
                 </div>
               ) : (
-                <div className="text-center py-1 mb-3">
-                  <span className="text-xs font-utility font-semibold" style={{ color: "var(--emerald)" }}>✅ ¡Deuda pagada!</span>
-                </div>
-              )}
-
-              {/* Historial de abonos con edición */}
-              {d.abonos && d.abonos.length > 0 && (
-                <div>
-                  <button onClick={() => setExpandedAbonos((prev) => ({ ...prev, [d.id]: !prev[d.id] }))} className="text-[11px] font-utility opacity-60 mb-2" style={{ color: "var(--ink)" }}>
-                    {expandedAbonos[d.id] ? "▲ Ocultar" : "▼ Ver"} abonos ({d.abonos.length})
-                  </button>
-                  {expandedAbonos[d.id] && (
-                    <div className="space-y-1.5">
-                      {d.abonos.map((a) => (
-                        <div key={a.id} className="flex items-center justify-between rounded-[10px] px-3 py-2" style={{ background: "var(--card-alt)" }}>
-                          {editAbono?.abonoId === a.id ? (
-                            <div className="flex gap-2 flex-1">
-                              <TextInput type="number" value={editAbono.valor}
-                                onChange={(e) => setEditAbono((prev) => ({ ...prev, valor: e.target.value }))}
-                                style={{ fontSize: "13px", padding: "4px 8px" }} />
-                              <TextInput type="date" value={editAbono.fecha}
-                                onChange={(e) => setEditAbono((prev) => ({ ...prev, fecha: e.target.value }))}
-                                style={{ fontSize: "13px", padding: "4px 8px" }} />
-                              <button onClick={handleGuardarEdicion} className="text-xs px-2 py-1 rounded-lg font-semibold" style={{ background: "var(--emerald)", color: "#fff" }}>✓</button>
-                              <button onClick={() => setEditAbono(null)} className="text-xs px-2 py-1 rounded-lg" style={{ background: "var(--line)", color: "var(--ink)" }}>✕</button>
-                            </div>
-                          ) : (
-                            <>
-                              <div>
-                                <span className="text-xs font-utility opacity-60" style={{ color: "var(--ink)" }}>{a.fecha}</span>
-                                <span className="text-xs font-semibold ml-2" style={{ color: "var(--emerald)" }}>${fmt(a.valor)}</span>
-                              </div>
-                              <div className="flex gap-2">
-                                <button onClick={() => setEditAbono({ deudaId: d.id, abonoId: a.id, valor: String(a.valor), fecha: a.fecha })} className="opacity-50">
-                                  <Edit3 size={13} style={{ color: "var(--lilac)" }} />
-                                </button>
-                                <button onClick={() => onEliminarAbonoDeuda(d.id, a.id)} className="opacity-40">
-                                  <Trash2 size={13} style={{ color: "var(--ink)" }} />
-                                </button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <>
+                  <div>
+                    <span className="text-xs font-utility opacity-60" style={{ color: "var(--ink)" }}>{a.fecha}</span>
+                    <span className="text-xs font-semibold ml-2" style={{ color: "var(--emerald)" }}>${fmt(a.valor)}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => isTC
+                      ? setEditAbonoTC({ tcId: deudaId, abonoId: a.id, valor: String(a.valor), fecha: a.fecha })
+                      : setEditAbono({ deudaId, abonoId: a.id, valor: String(a.valor), fecha: a.fecha })} className="opacity-50">
+                      <Edit3 size={13} style={{ color: "var(--lilac)" }} />
+                    </button>
+                    <button onClick={() => isTC ? onEliminarAbonoTC(deudaId, a.id) : onEliminarAbonoDeuda(deudaId, a.id)} className="opacity-40">
+                      <Trash2 size={13} style={{ color: "var(--ink)" }} />
+                    </button>
+                  </div>
+                </>
               )}
             </div>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
+  return (
+    <div className="px-5 pt-6 pb-4 space-y-6">
+      <h1 className="font-display text-[26px]" style={{ color: "var(--ink)" }}>Mis deudas 🏦</h1>
+
+      {/* ── TARJETA DE CRÉDITO ── */}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-display text-[16px]" style={{ color: "var(--ink)" }}>💳 Tarjeta de crédito</h3>
+          <button onClick={() => setShowAddTC(true)} className="flex items-center gap-1 text-xs font-utility font-medium px-3 py-1.5 rounded-full" style={{ background: "var(--amber-soft)", color: "var(--amber)" }}>
+            <Plus size={14} /> Nueva
+          </button>
+        </div>
+        <p className="text-xs font-utility opacity-60 mb-3" style={{ color: "var(--ink)" }}>
+          Registra aquí tus deudas de tarjeta. El saldo solo se reduce cuando tú registras un abono manualmente.
+        </p>
+
+        {deudasTC.length === 0 && (
+          <div className="text-center py-6 rounded-[18px]" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
+            <p className="text-2xl mb-1">💳</p>
+            <p className="text-sm font-utility opacity-50" style={{ color: "var(--ink)" }}>Sin deudas de tarjeta registradas</p>
+          </div>
+        )}
+
+        <div className="space-y-4">
+          {deudasTC.map((tc) => {
+            const pct = tc.montoTotal > 0 ? Math.min(((tc.montoTotal - tc.saldoPendiente) / tc.montoTotal) * 100, 100) : 0;
+            return (
+              <div key={tc.id} className="rounded-[20px] p-4" style={{ background: "var(--card)", border: "1px solid var(--amber)" }}>
+                <div className="flex items-start justify-between mb-2">
+                  <div>
+                    <p className="font-utility font-semibold text-sm" style={{ color: "var(--ink)" }}>{tc.nombre}</p>
+                    <p className="text-[11px] font-utility opacity-50 mt-0.5" style={{ color: "var(--ink)" }}>
+                      {tc.tipo} {tc.tipo === "Cuotas fijas" && tc.cuotasTotal ? `· ${tc.cuotasTotal} cuotas de $${fmt(tc.cuotaMensual)}` : ""}
+                    </p>
+                    {tc.notas && <p className="text-[11px] font-utility opacity-40 mt-0.5" style={{ color: "var(--ink)" }}>{tc.notas}</p>}
+                  </div>
+                  <button onClick={() => onDeleteDeudaTC(tc.id)} className="opacity-30"><Trash2 size={14} style={{ color: "var(--ink)" }} /></button>
+                </div>
+
+                <div className="h-2.5 rounded-full overflow-hidden mb-2" style={{ background: "var(--line)" }}>
+                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: pct >= 100 ? "var(--emerald)" : "var(--amber)" }} />
+                </div>
+                <div className="flex justify-between text-xs font-utility mb-3" style={{ color: "var(--ink)" }}>
+                  <span className="opacity-60">Pagado: <span className="font-semibold" style={{ color: "var(--emerald)" }}>${fmt(tc.montoTotal - tc.saldoPendiente)}</span></span>
+                  <span className="opacity-60">Pendiente: <span className="font-semibold" style={{ color: "var(--red)" }}>${fmt(tc.saldoPendiente)}</span></span>
+                </div>
+
+                {tc.cuotaMensual && tc.saldoPendiente > 0 && (
+                  <div className="rounded-[10px] px-3 py-2 mb-3" style={{ background: "var(--amber-soft)" }}>
+                    <p className="text-[11px] font-utility" style={{ color: "var(--ink)" }}>
+                      💡 Próximo abono sugerido: <span className="font-semibold" style={{ color: "var(--amber)" }}>${fmt(tc.cuotaMensual)}</span>
+                    </p>
+                  </div>
+                )}
+
+                {tc.saldoPendiente > 0 ? (
+                  <div className="flex gap-2 mb-3">
+                    <TextInput type="number" placeholder="Valor del abono"
+                      value={abonoTCValues[tc.id] || ""}
+                      onChange={(e) => setAbonoTCValues((prev) => ({ ...prev, [tc.id]: e.target.value }))}
+                      style={{ fontSize: "14px", padding: "8px 12px" }} />
+                    <button onClick={() => handleAbonoTC(tc.id, tc.saldoPendiente)} className="px-4 py-2 rounded-xl text-sm font-utility font-semibold flex-shrink-0" style={{ background: "var(--amber)", color: "#fff" }}>
+                      Abonar
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-center py-1 mb-3">
+                    <span className="text-xs font-utility font-semibold" style={{ color: "var(--emerald)" }}>✅ ¡Pagada!</span>
+                  </div>
+                )}
+                {tc.abonos && tc.abonos.length > 0 && renderAbonos(tc.abonos, tc.id, true)}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* ── OTRAS DEUDAS ── */}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-display text-[16px]" style={{ color: "var(--ink)" }}>🏦 Otras deudas</h3>
+          <button onClick={() => setShowAddDeuda(true)} className="flex items-center gap-1 text-xs font-utility font-medium px-3 py-1.5 rounded-full" style={{ background: "var(--lilac-soft)", color: "var(--lilac)" }}>
+            <Plus size={14} /> Nueva
+          </button>
+        </div>
+
+        {deudas.length === 0 && (
+          <div className="text-center py-6 rounded-[18px]" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
+            <p className="text-2xl mb-1">🎉</p>
+            <p className="text-sm font-utility opacity-50" style={{ color: "var(--ink)" }}>Sin otras deudas. ¡Genial!</p>
+          </div>
+        )}
+
+        <div className="space-y-4">
+          {deudas.map((d) => {
+            const pct = d.montoTotal > 0 ? Math.min(((d.montoTotal - d.saldoPendiente) / d.montoTotal) * 100, 100) : 0;
+            return (
+              <div key={d.id} className="rounded-[20px] p-4" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
+                <div className="flex items-start justify-between mb-2">
+                  <div>
+                    <p className="font-utility font-semibold text-sm" style={{ color: "var(--ink)" }}>{d.nombre}</p>
+                    {d.notas && <p className="text-xs font-utility opacity-50 mt-0.5" style={{ color: "var(--ink)" }}>{d.notas}</p>}
+                  </div>
+                  <button onClick={() => onDeleteDeuda(d.id)} className="opacity-30"><Trash2 size={14} style={{ color: "var(--ink)" }} /></button>
+                </div>
+                <div className="h-2.5 rounded-full overflow-hidden mb-2" style={{ background: "var(--line)" }}>
+                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: pct >= 100 ? "var(--emerald)" : "var(--lilac)" }} />
+                </div>
+                <div className="flex justify-between text-xs font-utility mb-3" style={{ color: "var(--ink)" }}>
+                  <span className="opacity-60">Pagado: <span className="font-semibold" style={{ color: "var(--emerald)" }}>${fmt(d.montoTotal - d.saldoPendiente)}</span></span>
+                  <span className="opacity-60">Pendiente: <span className="font-semibold" style={{ color: "var(--red)" }}>${fmt(d.saldoPendiente)}</span></span>
+                </div>
+                <div className="text-xs font-utility opacity-40 mb-3 text-right" style={{ color: "var(--ink)" }}>Total: ${fmt(d.montoTotal)} · {Math.round(pct)}% pagado</div>
+                {d.saldoPendiente > 0 ? (
+                  <div className="flex gap-2 mb-3">
+                    <TextInput type="number" placeholder="Valor del abono"
+                      value={abonoValues[d.id] || ""}
+                      onChange={(e) => setAbonoValues((prev) => ({ ...prev, [d.id]: e.target.value }))}
+                      style={{ fontSize: "14px", padding: "8px 12px" }} />
+                    <button onClick={() => handleAbono(d.id, d.saldoPendiente)} className="px-4 py-2 rounded-xl text-sm font-utility font-semibold flex-shrink-0" style={{ background: "var(--lilac)", color: "#fff" }}>
+                      Abonar
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-center py-1 mb-3"><span className="text-xs font-utility font-semibold" style={{ color: "var(--emerald)" }}>✅ ¡Deuda pagada!</span></div>
+                )}
+                {d.abonos && d.abonos.length > 0 && renderAbonos(d.abonos, d.id, false)}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Sheet nueva deuda TC */}
+      <Sheet open={showAddTC} onClose={() => setShowAddTC(false)} title="Nueva deuda de tarjeta 💳">
+        <Field label="Nombre / descripción">
+          <TextInput value={tcNombre} onChange={(e) => setTcNombre(e.target.value)} placeholder="Ej: Compra ropa, Viaje..." />
+        </Field>
+        <Field label="Monto total de la deuda">
+          <TextInput type="number" value={tcMonto} onChange={(e) => setTcMonto(e.target.value)} placeholder="0" />
+        </Field>
+        <Field label="¿Cómo lo pagarás?">
+          <SelectInput value={tcTipo} onChange={(e) => setTcTipo(e.target.value)}>
+            {DEUDA_TC_TIPOS.map((t) => <option key={t} value={t}>{t}</option>)}
+          </SelectInput>
+        </Field>
+        {tcTipo === "Cuotas fijas" && (
+          <Field label="Número de cuotas">
+            <TextInput type="number" value={tcCuotas} onChange={(e) => setTcCuotas(e.target.value)} placeholder="Ej: 3" />
+          </Field>
+        )}
+        {tcMonto && tcTipo === "Cuotas fijas" && tcCuotas && (
+          <div className="rounded-[12px] p-3 mb-3" style={{ background: "var(--amber-soft)" }}>
+            <p className="text-[12px] font-utility" style={{ color: "var(--ink)" }}>
+              Cuota mensual: <span className="font-semibold" style={{ color: "var(--amber)" }}>${fmt(Math.ceil(parseFloat(tcMonto) / (parseInt(tcCuotas) || 1)))}</span>
+            </p>
+          </div>
+        )}
+        <Field label="Notas (opcional)">
+          <TextInput value={tcNotas} onChange={(e) => setTcNotas(e.target.value)} placeholder="Ej: Banco X, vence en mayo..." />
+        </Field>
+        <button onClick={handleAddTC} className="w-full mt-2 rounded-xl py-3.5 font-utility font-semibold text-[15px]" style={{ background: "var(--amber)", color: "#fff" }}>
+          Registrar deuda
+        </button>
+      </Sheet>
+
+      {/* Sheet nueva deuda normal */}
       <Sheet open={showAddDeuda} onClose={() => setShowAddDeuda(false)} title="Nueva deuda 🏦">
         <Field label="Nombre de la deuda">
           <TextInput value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Préstamo banco, Deuda con amiga..." />
@@ -1697,30 +1849,7 @@ export default function App() {
 
   const handleAddMovement = (type) => (item) => {
     updateAndSave((d) => {
-      if (type === "gasto") {
-        d.gastos.push(item);
-        // Si es crédito diferido, crear una deuda automática en el módulo de Deudas
-        if (item.metodo === "Crédito" && (item.creditoTipo === "Acumula próximo mes" || item.creditoTipo === "Diferir en cuotas")) {
-          if (!d.deudas) d.deudas = [];
-          const nombreDeuda = `💳 ${item.descripcion || item.categoria} (crédito)`;
-          const cuotasNum = item.creditoTipo === "Diferir en cuotas" ? (item.cuotas || 1) : 1;
-          const notaDeuda = item.creditoTipo === "Diferir en cuotas"
-            ? `${cuotasNum} cuotas de $${fmt(Math.ceil(item.valor / cuotasNum))} · Registrado el ${item.fecha}`
-            : `Pago completo en siguiente período · Registrado el ${item.fecha}`;
-          d.deudas.push({
-            id: uid(),
-            nombre: nombreDeuda,
-            montoTotal: item.valor,
-            saldoPendiente: item.valor,
-            abonos: [],
-            fecha: item.fecha,
-            notas: notaDeuda,
-            gastoId: item.id, // referencia al gasto original
-            esCreditoAuto: true,
-            cuotasMensuales: item.creditoTipo === "Diferir en cuotas" ? Math.ceil(item.valor / cuotasNum) : item.valor,
-          });
-        }
-      }
+      if (type === "gasto") d.gastos.push(item);
       else if (type === "ingreso") d.ingresos.push(item);
       else if (type === "ahorro") d.ahorros.push(item);
       return d;
@@ -1775,6 +1904,37 @@ export default function App() {
     return d;
   });
   const handleDeleteDeuda = (id) => updateAndSave((d) => { d.deudas = (d.deudas || []).filter((x) => x.id !== id); return d; });
+
+  // Handlers para deudas de tarjeta de crédito
+  const handleAddDeudaTC = (deuda) => updateAndSave((d) => { d.deudasTC = [...(d.deudasTC || []), deuda]; return d; });
+  const handleAbonarDeudaTC = (id, abono) => updateAndSave((d) => {
+    d.deudasTC = (d.deudasTC || []).map((tc) => {
+      if (tc.id !== id) return tc;
+      const nuevosAbonos = [...(tc.abonos || []), { id: uid(), fecha: todayISO(), valor: abono }];
+      const totalAbonado = nuevosAbonos.reduce((s, a) => s + a.valor, 0);
+      return { ...tc, abonos: nuevosAbonos, saldoPendiente: Math.max(tc.montoTotal - totalAbonado, 0) };
+    });
+    return d;
+  });
+  const handleDeleteDeudaTC = (id) => updateAndSave((d) => { d.deudasTC = (d.deudasTC || []).filter((x) => x.id !== id); return d; });
+  const handleEditarAbonoTC = (tcId, abonoId, nuevoValor, nuevaFecha) => updateAndSave((d) => {
+    d.deudasTC = (d.deudasTC || []).map((tc) => {
+      if (tc.id !== tcId) return tc;
+      const abonos = (tc.abonos || []).map((a) => a.id === abonoId ? { ...a, valor: nuevoValor, fecha: nuevaFecha } : a);
+      const totalAbonado = abonos.reduce((s, a) => s + a.valor, 0);
+      return { ...tc, abonos, saldoPendiente: Math.max(tc.montoTotal - totalAbonado, 0) };
+    });
+    return d;
+  });
+  const handleEliminarAbonoTC = (tcId, abonoId) => updateAndSave((d) => {
+    d.deudasTC = (d.deudasTC || []).map((tc) => {
+      if (tc.id !== tcId) return tc;
+      const abonos = (tc.abonos || []).filter((a) => a.id !== abonoId);
+      const totalAbonado = abonos.reduce((s, a) => s + a.valor, 0);
+      return { ...tc, abonos, saldoPendiente: Math.max(tc.montoTotal - totalAbonado, 0) };
+    });
+    return d;
+  });
 
   const handleAddMeta = (meta) => updateAndSave((d) => { d.metas.push({ ...meta, abonos: [] }); return d; });
   const handleAgregarAbonoMeta = (metaId, abono) => updateAndSave((d) => {
@@ -1861,6 +2021,11 @@ export default function App() {
               onEditarAbonoDeuda={handleEditarAbonoDeuda}
               onEliminarAbonoDeuda={handleEliminarAbonoDeuda}
               onDeleteDeuda={handleDeleteDeuda}
+              onAddDeudaTC={handleAddDeudaTC}
+              onAbonarDeudaTC={handleAbonarDeudaTC}
+              onDeleteDeudaTC={handleDeleteDeudaTC}
+              onEditarAbonoTC={handleEditarAbonoTC}
+              onEliminarAbonoTC={handleEliminarAbonoTC}
             />
           )}
           {tab === "ajustes" && (
