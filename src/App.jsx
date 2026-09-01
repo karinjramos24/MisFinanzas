@@ -186,7 +186,15 @@ function useAnalytics(data) {
       }, 0);
       const ing = sumIn(byPeriod(ingresos, p));
       const aho = sumIn(byPeriod(ahorros, p));
-      return { period: p, ingresos: ing, gastos: gasReal, ahorro: aho, libre: ing - gasReal - aho };
+      // Abonos a deudas realizados en este período también reducen el saldo disponible
+      const abonosDeudas = (data.deudas || []).reduce((s, d) => {
+        return s + (d.abonos || []).filter((a) => inPeriod(a.fecha, p.inicio, p.fin || "9999-12-31")).reduce((ss, a) => ss + (Number(a.valor) || 0), 0);
+      }, 0);
+      const abonosTC = (data.deudasTC || []).reduce((s, d) => {
+        return s + (d.abonos || []).filter((a) => inPeriod(a.fecha, p.inicio, p.fin || "9999-12-31")).reduce((ss, a) => ss + (Number(a.valor) || 0), 0);
+      }, 0);
+      const totalComprometido = gasReal + aho + abonosDeudas + abonosTC;
+      return { period: p, ingresos: ing, gastos: gasReal, ahorro: aho, abonosDeudas, abonosTC, libre: ing - totalComprometido };
     });
 
     const curM = periodicSummary.find((s) => s.period?.key === curPeriod?.key) || { ingresos: 0, gastos: 0, ahorro: 0, libre: 0 };
@@ -867,11 +875,12 @@ class MetasErrorBoundary extends Component {
 }
 
 /* ── GOALS & LIMITS ──────────────────────────────────────────────────── */
-function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAbono, onEliminarAbono, onDeleteMeta, onUpdateLimit }) {
+function GoalsAndLimits({ data, analytics, onAddMeta, onEditarMeta, onAgregarAbono, onEditarAbono, onEliminarAbono, onDeleteMeta, onUpdateLimit }) {
   const [showAddMeta, setShowAddMeta] = useState(false);
   const [nombre, setNombre] = useState("");
   const [monto, setMonto] = useState("");
   const [fechaMeta, setFechaMeta] = useState("");
+  const [editMeta, setEditMeta] = useState(null);
   const [abonoValues, setAbonoValues] = useState({});
   const [expandedMeta, setExpandedMeta] = useState(null);
   const [expandedAbonos, setExpandedAbonos] = useState({});
@@ -886,6 +895,14 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
     if (!nombre.trim() || !m || m <= 0) return;
     onAddMeta({ id: uid(), nombre: nombre.trim(), monto: m, fecha: fechaMeta || null, abonos: [] });
     setNombre(""); setMonto(""); setFechaMeta(""); setShowAddMeta(false);
+  };
+
+  const handleGuardarEditMeta = () => {
+    if (!editMeta) return;
+    const m = parseFloat(editMeta.monto);
+    if (!editMeta.nombre.trim() || !m || m <= 0) return;
+    onEditarMeta(editMeta.id, { nombre: editMeta.nombre.trim(), monto: m, fecha: editMeta.fecha || null });
+    setEditMeta(null);
   };
 
   const handleAbono = (metaId) => {
@@ -939,7 +956,10 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
                     {m.mesesHastaFecha != null && ` · ${m.mesesHastaFecha} períodos restantes`}
                   </p>}
                 </div>
-                <button onClick={() => onDeleteMeta(m.id)} className="opacity-30 ml-2"><Trash2 size={14} style={{ color: "var(--ink)" }} /></button>
+                <div className="flex gap-2 ml-2">
+                  <button onClick={() => setEditMeta({ id: m.id, nombre: m.nombre, monto: String(m.monto), fecha: m.fecha || "" })} className="opacity-50"><Edit3 size={14} style={{ color: "var(--lilac)" }} /></button>
+                  <button onClick={() => onDeleteMeta(m.id)} className="opacity-30"><Trash2 size={14} style={{ color: "var(--ink)" }} /></button>
+                </div>
               </div>
 
               <div className="h-2.5 rounded-full overflow-hidden mb-2" style={{ background: "var(--line)" }}>
@@ -1054,6 +1074,22 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
         </div>
       </section>
 
+      {/* Sheet de edición de meta */}
+      <Sheet open={!!editMeta} onClose={() => setEditMeta(null)} title="Editar meta ✏️">
+        <Field label="Nombre">
+          <TextInput value={editMeta?.nombre || ""} onChange={(e) => setEditMeta((p) => ({ ...p, nombre: e.target.value }))} placeholder="Nombre de la meta" />
+        </Field>
+        <Field label="Monto objetivo">
+          <TextInput type="number" value={editMeta?.monto || ""} onChange={(e) => setEditMeta((p) => ({ ...p, monto: e.target.value }))} placeholder="0" />
+        </Field>
+        <Field label="Fecha límite (opcional)">
+          <TextInput type="date" value={editMeta?.fecha || ""} onChange={(e) => setEditMeta((p) => ({ ...p, fecha: e.target.value }))} />
+        </Field>
+        <button onClick={handleGuardarEditMeta} className="w-full mt-2 rounded-xl py-3.5 font-utility font-semibold text-[15px]" style={{ background: "var(--lilac)", color: "#FFFFFF" }}>
+          Guardar cambios ✅
+        </button>
+      </Sheet>
+
       <Sheet open={showAddMeta} onClose={() => setShowAddMeta(false)} title="Nueva meta 🌸">
         <Field label="Nombre"><TextInput value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej: Cuota inicial vivienda" /></Field>
         <Field label="Monto objetivo"><TextInput type="number" value={monto} onChange={(e) => setMonto(e.target.value)} placeholder="0" /></Field>
@@ -1070,7 +1106,7 @@ function GoalsAndLimits({ data, analytics, onAddMeta, onAgregarAbono, onEditarAb
 }
 
 /* ── DEUDAS ──────────────────────────────────────────────────────────── */
-function DeudasView({ data, onAddDeuda, onAbonarDeuda, onEditarAbonoDeuda, onEliminarAbonoDeuda, onDeleteDeuda, onAddDeudaTC, onAbonarDeudaTC, onDeleteDeudaTC, onEditarAbonoTC, onEliminarAbonoTC }) {
+function DeudasView({ data, onAddDeuda, onAbonarDeuda, onEditarAbonoDeuda, onEliminarAbonoDeuda, onDeleteDeuda, onEditarDeuda, onAddDeudaTC, onAbonarDeudaTC, onDeleteDeudaTC, onEditarAbonoTC, onEliminarAbonoTC, onEditarDeudaTC }) {
   const [showAddDeuda, setShowAddDeuda] = useState(false);
   const [nombre, setNombre] = useState(""); const [monto, setMonto] = useState(""); const [notas, setNotas] = useState("");
   const [showAddTC, setShowAddTC] = useState(false);
@@ -1078,11 +1114,21 @@ function DeudasView({ data, onAddDeuda, onAbonarDeuda, onEditarAbonoDeuda, onEli
   const [abonoValues, setAbonoValues] = useState({});
   const [expandedAbonos, setExpandedAbonos] = useState({});
   const [editAbono, setEditAbono] = useState(null);
+  const [editDeuda, setEditDeuda] = useState(null); // { id, nombre, montoTotal, notas, isTC }
 
   const handleAddDeuda = () => { const m = parseFloat(monto); if (!nombre.trim() || !m || m <= 0) return; onAddDeuda({ id: uid(), nombre: nombre.trim(), montoTotal: m, saldoPendiente: m, abonos: [], fecha: todayISO(), notas: notas.trim() }); setNombre(""); setMonto(""); setNotas(""); setShowAddDeuda(false); };
   const handleAddTC = () => { const m = parseFloat(tcMonto); if (!tcNombre.trim() || !m || m <= 0) return; const c = parseInt(tcCuotas) || 1; onAddDeudaTC({ id: uid(), nombre: tcNombre.trim(), montoTotal: m, saldoPendiente: m, abonos: [], fecha: todayISO(), notas: tcNotas.trim(), tipo: tcTipo, cuotasTotal: c, cuotaMensual: tcTipo === "Cuotas fijas" ? Math.ceil(m / c) : m }); setTcNombre(""); setTcMonto(""); setTcCuotas(""); setTcNotas(""); setShowAddTC(false); };
   const handleAbono = (id, saldo, isTC) => { const val = parseFloat(abonoValues[id]); if (!val || val <= 0) return; if (isTC) onAbonarDeudaTC(id, Math.min(val, saldo)); else onAbonarDeuda(id, Math.min(val, saldo)); setAbonoValues((p) => ({ ...p, [id]: "" })); };
   const handleGuardarEdicion = () => { if (!editAbono) return; const val = parseFloat(editAbono.valor); if (!val || val <= 0) return; if (editAbono.isTC) onEditarAbonoTC(editAbono.id, editAbono.abonoId, val, editAbono.fecha); else onEditarAbonoDeuda(editAbono.id, editAbono.abonoId, val, editAbono.fecha); setEditAbono(null); };
+  const handleGuardarEditDeuda = () => {
+    if (!editDeuda) return;
+    const m = parseFloat(editDeuda.montoTotal);
+    if (!editDeuda.nombre.trim() || !m || m <= 0) return;
+    const cambios = { nombre: editDeuda.nombre.trim(), notas: editDeuda.notas || "" };
+    if (editDeuda.isTC) onEditarDeudaTC(editDeuda.id, cambios);
+    else onEditarDeuda(editDeuda.id, cambios);
+    setEditDeuda(null);
+  };
 
   const renderDeuda = (d, isTC) => {
     const pct = d.montoTotal > 0 ? Math.min(((d.montoTotal - d.saldoPendiente) / d.montoTotal) * 100, 100) : 0;
@@ -1094,7 +1140,10 @@ function DeudasView({ data, onAddDeuda, onAbonarDeuda, onEditarAbonoDeuda, onEli
             {d.notas && <p className="text-[11px] font-utility opacity-50 mt-0.5" style={{ color: "var(--ink)" }}>{d.notas}</p>}
             {isTC && d.cuotaMensual && d.saldoPendiente > 0 && <p className="text-[11px] font-utility mt-1" style={{ color: "var(--amber)" }}>💡 Cuota sugerida: <span className="font-semibold">${fmt(d.cuotaMensual)}</span></p>}
           </div>
-          <button onClick={() => isTC ? onDeleteDeudaTC(d.id) : onDeleteDeuda(d.id)} className="opacity-30"><Trash2 size={14} style={{ color: "var(--ink)" }} /></button>
+          <div className="flex gap-2">
+            <button onClick={() => setEditDeuda({ id: d.id, nombre: d.nombre, montoTotal: String(d.montoTotal), notas: d.notas || "", isTC })} className="opacity-50"><Edit3 size={14} style={{ color: "var(--lilac)" }} /></button>
+            <button onClick={() => isTC ? onDeleteDeudaTC(d.id) : onDeleteDeuda(d.id)} className="opacity-30"><Trash2 size={14} style={{ color: "var(--ink)" }} /></button>
+          </div>
         </div>
         <div className="h-2.5 rounded-full overflow-hidden mb-2" style={{ background: "var(--line)" }}>
           <div className="h-full rounded-full" style={{ width: `${pct}%`, background: pct >= 100 ? "var(--emerald)" : isTC ? "var(--amber)" : "var(--lilac)" }} />
@@ -1165,6 +1214,19 @@ function DeudasView({ data, onAddDeuda, onAbonarDeuda, onEditarAbonoDeuda, onEli
         <div className="space-y-4">{(data.deudas || []).map((d) => renderDeuda(d, false))}</div>
       </section>
 
+      {/* Sheet edición de deuda */}
+      <Sheet open={!!editDeuda} onClose={() => setEditDeuda(null)} title="Editar deuda ✏️">
+        <Field label="Nombre">
+          <TextInput value={editDeuda?.nombre || ""} onChange={(e) => setEditDeuda((p) => ({ ...p, nombre: e.target.value }))} placeholder="Nombre de la deuda" />
+        </Field>
+        <Field label="Notas (opcional)">
+          <TextInput value={editDeuda?.notas || ""} onChange={(e) => setEditDeuda((p) => ({ ...p, notas: e.target.value }))} placeholder="Ej: Banco X, vence en mayo..." />
+        </Field>
+        <button onClick={handleGuardarEditDeuda} className="w-full mt-2 rounded-xl py-3.5 font-utility font-semibold text-[15px]" style={{ background: "var(--lilac)", color: "#fff" }}>
+          Guardar cambios ✅
+        </button>
+      </Sheet>
+
       <Sheet open={showAddTC} onClose={() => setShowAddTC(false)} title="Nueva deuda de tarjeta 💳">
         <Field label="Nombre / descripción"><TextInput value={tcNombre} onChange={(e) => setTcNombre(e.target.value)} placeholder="Ej: Compra ropa, Viaje..." /></Field>
         <Field label="Monto total"><TextInput type="number" value={tcMonto} onChange={(e) => setTcMonto(e.target.value)} placeholder="0" /></Field>
@@ -1209,7 +1271,7 @@ function SettingsView({ data, onToggleDark, onExport, onBackup, onRestore, error
       </div>
       <div className="rounded-[18px] p-4" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
         <p className="text-xs font-utility opacity-60 leading-relaxed" style={{ color: "var(--ink)" }}>💌 Tus datos se guardan solitos. Todo queda en tu dispositivo.</p>
-        <p className="text-[10px] font-utility opacity-30 mt-2 text-right" style={{ color: "var(--ink)" }}>v1.5.1</p>
+        <p className="text-[10px] font-utility opacity-30 mt-2 text-right" style={{ color: "var(--ink)" }}>v1.6.0</p>
       </div>
     </div>
   );
@@ -1266,6 +1328,7 @@ export default function App() {
   });
 
   const handleAddMeta = (meta) => updateAndSave((d) => { d.metas.push(meta); return d; });
+  const handleEditarMeta = (id, cambios) => updateAndSave((d) => { d.metas = d.metas.map((m) => m.id === id ? { ...m, ...cambios } : m); return d; });
   const handleAgregarAbonoMeta = (metaId, abono) => updateAndSave((d) => { const m = d.metas.find((x) => x.id === metaId); if (m) m.abonos = [...(m.abonos || []), { id: uid(), fecha: todayISO(), ...abono }]; return d; });
   const handleEditarAbonoMeta = (metaId, abonoId, val, fecha) => updateAndSave((d) => { const m = d.metas.find((x) => x.id === metaId); if (m) m.abonos = (m.abonos || []).map((a) => a.id === abonoId ? { ...a, valor: val, fecha } : a); return d; });
   const handleEliminarAbonoMeta = (metaId, abonoId) => updateAndSave((d) => { const m = d.metas.find((x) => x.id === metaId); if (m) m.abonos = (m.abonos || []).filter((a) => a.id !== abonoId); return d; });
@@ -1273,6 +1336,8 @@ export default function App() {
   const handleUpdateLimit = (cat, val) => updateAndSave((d) => { d.limites[cat] = val; return d; });
 
   const handleAddDeuda = (deuda) => updateAndSave((d) => { d.deudas = [...(d.deudas || []), deuda]; return d; });
+  const handleEditarDeuda = (id, cambios) => updateAndSave((d) => { d.deudas = (d.deudas || []).map((x) => x.id === id ? { ...x, ...cambios } : x); return d; });
+  const handleEditarDeudaTC = (id, cambios) => updateAndSave((d) => { d.deudasTC = (d.deudasTC || []).map((x) => x.id === id ? { ...x, ...cambios } : x); return d; });
   const handleAbonarDeuda = (id, abono) => updateAndSave((d) => { d.deudas = (d.deudas || []).map((x) => { if (x.id !== id) return x; const abonos = [...(x.abonos || []), { id: uid(), fecha: todayISO(), valor: abono }]; return { ...x, abonos, saldoPendiente: Math.max(x.montoTotal - abonos.reduce((s, a) => s + a.valor, 0), 0) }; }); return d; });
   const handleEditarAbonoDeuda = (did, aid, val, fecha) => updateAndSave((d) => { d.deudas = (d.deudas || []).map((x) => { if (x.id !== did) return x; const abonos = (x.abonos || []).map((a) => a.id === aid ? { ...a, valor: val, fecha } : a); return { ...x, abonos, saldoPendiente: Math.max(x.montoTotal - abonos.reduce((s, a) => s + a.valor, 0), 0) }; }); return d; });
   const handleEliminarAbonoDeuda = (did, aid) => updateAndSave((d) => { d.deudas = (d.deudas || []).map((x) => { if (x.id !== did) return x; const abonos = (x.abonos || []).filter((a) => a.id !== aid); return { ...x, abonos, saldoPendiente: Math.max(x.montoTotal - abonos.reduce((s, a) => s + a.valor, 0), 0) }; }); return d; });
@@ -1345,7 +1410,7 @@ export default function App() {
           {tab === "metas" && (
             <MetasErrorBoundary>
               <GoalsAndLimits data={data} analytics={analytics}
-                onAddMeta={handleAddMeta} onAgregarAbono={handleAgregarAbonoMeta}
+                onAddMeta={handleAddMeta} onEditarMeta={handleEditarMeta} onAgregarAbono={handleAgregarAbonoMeta}
                 onEditarAbono={handleEditarAbonoMeta} onEliminarAbono={handleEliminarAbonoMeta}
                 onDeleteMeta={handleDeleteMeta} onUpdateLimit={handleUpdateLimit} />
             </MetasErrorBoundary>
@@ -1353,9 +1418,9 @@ export default function App() {
           {tab === "deudas" && (
             <DeudasView data={data}
               onAddDeuda={handleAddDeuda} onAbonarDeuda={handleAbonarDeuda}
-              onEditarAbonoDeuda={handleEditarAbonoDeuda} onEliminarAbonoDeuda={handleEliminarAbonoDeuda} onDeleteDeuda={handleDeleteDeuda}
+              onEditarAbonoDeuda={handleEditarAbonoDeuda} onEliminarAbonoDeuda={handleEliminarAbonoDeuda} onDeleteDeuda={handleDeleteDeuda} onEditarDeuda={handleEditarDeuda}
               onAddDeudaTC={handleAddDeudaTC} onAbonarDeudaTC={handleAbonarDeudaTC}
-              onEditarAbonoTC={handleEditarAbonoTC} onEliminarAbonoTC={handleEliminarAbonoTC} onDeleteDeudaTC={handleDeleteDeudaTC} />
+              onEditarAbonoTC={handleEditarAbonoTC} onEliminarAbonoTC={handleEliminarAbonoTC} onDeleteDeudaTC={handleDeleteDeudaTC} onEditarDeudaTC={handleEditarDeudaTC} />
           )}
           {tab === "ajustes" && <SettingsView data={data} onToggleDark={handleToggleDark} onExport={handleExport} onBackup={handleBackup} onRestore={handleRestore} error={error} />}
         </div>
