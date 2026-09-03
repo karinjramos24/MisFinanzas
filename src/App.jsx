@@ -423,8 +423,8 @@ function AddMovementSheet({ open, onClose, type, onSave, initialData, metas, onA
       onSave({ id: baseId, fecha, valor: num, categoria, fuente: descripcion, notas: "" });
     } else {
       const ahorroItem = { id: baseId, fecha, valor: num, meta: metaSeleccionada || null, observaciones: descripcion };
-      onSave(ahorroItem);
-      if (metaSeleccionada && onAgregarAbonoMeta) onAgregarAbonoMeta(metaSeleccionada, { valor: num });
+      // Pasar metaSeleccionada para que el handler lo haga todo en un solo updateAndSave
+      onSave(ahorroItem, metaSeleccionada || null);
     }
     onClose();
   };
@@ -1271,7 +1271,7 @@ function SettingsView({ data, onToggleDark, onExport, onBackup, onRestore, error
       </div>
       <div className="rounded-[18px] p-4" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
         <p className="text-xs font-utility opacity-60 leading-relaxed" style={{ color: "var(--ink)" }}>💌 Tus datos se guardan solitos. Todo queda en tu dispositivo.</p>
-        <p className="text-[10px] font-utility opacity-30 mt-2 text-right" style={{ color: "var(--ink)" }}>v1.6.0</p>
+        <p className="text-[10px] font-utility opacity-30 mt-2 text-right" style={{ color: "var(--ink)" }}>v1.6.1</p>
       </div>
     </div>
   );
@@ -1304,11 +1304,20 @@ export default function App() {
 
   const updateAndSave = (mutator) => { const next = mutator(JSON.parse(JSON.stringify(data))); setData(next); };
 
-  const handleAddMovement = (type) => (item) => {
+  const handleAddMovement = (type) => (item, metaId) => {
     updateAndSave((d) => {
       if (type === "gasto") d.gastos.push(item);
       else if (type === "ingreso") d.ingresos.push(item);
-      else if (type === "ahorro") d.ahorros.push(item);
+      else if (type === "ahorro") {
+        d.ahorros.push(item);
+        // Si hay meta seleccionada, abonar en el mismo updateAndSave (operación atómica)
+        if (metaId) {
+          const meta = d.metas.find((m) => m.id === metaId);
+          if (meta) {
+            meta.abonos = [...(meta.abonos || []), { id: uid(), fecha: item.fecha, valor: item.valor }];
+          }
+        }
+      }
       return d;
     });
   };
@@ -1460,3 +1469,4 @@ export default function App() {
     </div>
   );
 }
+
