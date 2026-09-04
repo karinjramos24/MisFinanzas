@@ -112,50 +112,46 @@ function useStorage() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    let parsed = null;
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw);
-        if (!parsed.deudas) parsed.deudas = [];
-        if (!parsed.deudasTC) parsed.deudasTC = [];
-        if (parsed.metas) {
-          parsed.metas = parsed.metas.map((meta) => {
-            try {
-              if (!Array.isArray(meta.abonos)) {
-                const v = typeof meta.ahorroAcumulado === "number" && meta.ahorroAcumulado > 0 ? meta.ahorroAcumulado : 0;
-                const abonos = v > 0 ? [{ id: uid(), fecha: meta.fecha || todayISO(), valor: v, notas: "Abono inicial" }] : [];
-                const { ahorroAcumulado: _, ...rest } = meta;
-                return { ...rest, abonos };
-              }
-              return { ...meta, abonos: meta.abonos.map((a) => ({ id: a.id || uid(), ...a })) };
-            } catch (_) { return { ...meta, abonos: meta.abonos || [] }; }
-          });
-        }
-        setData(parsed);
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed)); } catch (_) {}
-      } else {
-        const seed = seedData();
-        setData(seed);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
+        parsed = JSON.parse(raw);
       }
-    } catch (e) {
-      try {
-        const rawFallback = localStorage.getItem(STORAGE_KEY);
-        if (rawFallback) {
-          setData(JSON.parse(rawFallback));
-          setError("Hubo un problema al cargar tus datos. Ve a Ajustes y descarga un respaldo por seguridad.");
-        } else {
-          const seed = seedData();
-          setData(seed);
-          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(seed)); } catch (_) {}
-        }
-      } catch (_) {
-        setError("No se pudieron cargar tus datos. Por favor recarga la página.");
-        setData(seedData());
-      }
-    } finally {
-      setLoading(false);
+    } catch (_) {
+      // No se pudo leer — dejar parsed como null
     }
+
+    if (parsed && typeof parsed === "object") {
+      // Tenemos datos guardados — solo AGREGAR campos que falten, nunca modificar existentes
+      const safe = {
+        ingresos: Array.isArray(parsed.ingresos) ? parsed.ingresos : [],
+        gastos: Array.isArray(parsed.gastos) ? parsed.gastos : [],
+        ahorros: Array.isArray(parsed.ahorros) ? parsed.ahorros : [],
+        metas: Array.isArray(parsed.metas) ? parsed.metas.map((m) => ({
+          ...m,
+          // Solo garantizar que abonos sea un array, sin borrar ni transformar nada
+          abonos: Array.isArray(m.abonos) ? m.abonos.map((a) => ({
+            id: a.id || uid(), fecha: a.fecha || todayISO(), valor: Number(a.valor) || 0, ...a
+          })) : (m.ahorroAcumulado > 0 ? [{ id: uid(), fecha: todayISO(), valor: Number(m.ahorroAcumulado) || 0 }] : []),
+        })) : [],
+        deudas: Array.isArray(parsed.deudas) ? parsed.deudas : [],
+        deudasTC: Array.isArray(parsed.deudasTC) ? parsed.deudasTC : [],
+        limites: parsed.limites && typeof parsed.limites === "object" ? parsed.limites : {},
+        darkMode: parsed.darkMode === true,
+      };
+      // Agregar límites que falten sin borrar los existentes
+      CATS_GASTO.forEach((cat) => { if (!(cat in safe.limites)) safe.limites[cat] = 0; });
+      setData(safe);
+      // Guardar la versión normalizada
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(safe)); } catch (_) {}
+    } else {
+      // No hay datos — primera vez que se usa la app, cargar ejemplos
+      const seed = seedData();
+      setData(seed);
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(seed)); } catch (_) {}
+    }
+    setLoading(false);
   }, []);
 
   const persist = useCallback((next) => {
@@ -1271,7 +1267,7 @@ function SettingsView({ data, onToggleDark, onExport, onBackup, onRestore, error
       </div>
       <div className="rounded-[18px] p-4" style={{ background: "var(--card)", border: "1px solid var(--line)" }}>
         <p className="text-xs font-utility opacity-60 leading-relaxed" style={{ color: "var(--ink)" }}>💌 Tus datos se guardan solitos. Todo queda en tu dispositivo.</p>
-        <p className="text-[10px] font-utility opacity-30 mt-2 text-right" style={{ color: "var(--ink)" }}>v1.6.1</p>
+        <p className="text-[10px] font-utility opacity-30 mt-2 text-right" style={{ color: "var(--ink)" }}>v1.6.2</p>
       </div>
     </div>
   );
@@ -1469,4 +1465,3 @@ export default function App() {
     </div>
   );
 }
-
